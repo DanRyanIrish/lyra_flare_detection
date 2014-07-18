@@ -131,7 +131,7 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
                    "Moon in LYRA", "Recovery"], return_artifacts=True,
                    lytaf_path=lytaf_path)
     clean_flux = fluxlist[0]
-    artifacts_removed = artifact_status[1]
+    artifacts_removed = artifact_status["removed"]
     # Perform subtraction so median irradiance of time series is at
     # average daily minimum from first 4 years of mission.
     clean_flux = clean_flux - (np.median(clean_flux)-NORM)
@@ -309,18 +309,19 @@ def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
     clean_fluxes : (optional) list ndarrays/array-likes convertible to float64
         list of fluxes with artifact periods removed.
 
-    artifact_status : (optional) list
+    artifact_status : (optional) dictionary
         List of 4 variables containing information on what artifacts were
         found, removed, etc. from the time series.
-        artifact_status[0] = artifacts found : numpy recarray
+        artifact_status["lytaf"] = artifacts found : numpy recarray
             The full LYRA annotation file for the time series time range
             output by extract_combined_lytaf().
-        artifact_status[1] = artifacts removed : numpy recarray
+        artifact_status["removed"] = artifacts removed : numpy recarray
             Artifacts which were found and removed from from time series.
-        artifact_status[2] = artifacts found but not removed : numpy recarray
+        artifact_status["not_removed"] = artifacts found but not removed :
+              numpy recarray
             Artifacts which were found but not removed as they were not
             included when user defined artifacts kwarg.
-        artifact_status[3] = artifacts not found : list of strings
+        artifact_status["not_found"] = artifacts not found : list of strings
             Artifacts listed to be removed by user when defining artifacts
             kwarg which were not found in time series time range.
 
@@ -384,30 +385,19 @@ def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
     # If return_artifacts kwarg is True, return a list containing
     # information on what artifacts found, removed, etc.  See docstring.
     if return_artifacts is True:
-        # Define output list for artifact info
-        artifact_status = []
         if artifacts_not_found == artifacts:
-            # Artifacts found in annotation file
-            artifact_status.append(lytaf)
-            # Artifacts removed
-            artifact_status.append(None)
-            # Artifacts not removed
-            artifact_status.append(None)
-            # Artifacts not found
-            artifact_status.append(artifacts_not_found)
+            artifact_status = {"lytaf": lytaf,
+                               "removed": lytaf[artifact_indices],
+                               "not_removed": None,
+                               "not_found": artifacts_not_found}
         else:
-            # Artifacts found in annotation file
-            artifact_status.append(lytaf)
-            # Artifacts removed            
-            artifact_status.append(lytaf[artifact_indices])
-            # Artifacts not removed
-            artifact_status.append(np.delete(lytaf, artifact_indices)) 
-            # Artifacts not found
+            artifacts_removed = lytaf[artifact_indices]
+            artifacts_not_removed = np.delete(lytaf, artifact_indices)
             if artifacts == "All":
-                artifact_status.append(None)
-            else:
-                artifact_status.append(artifacts_not_found)
-
+                artifacts_not_found = None
+            artifact_status = {"lytaf": lytaf, "removed": artifacts_removed,
+                               "not_removed": artifacts_not_removed,
+                               "not_found": artifacts_not_found}
     # Output FITS file if fits kwarg is set
     if fitsfile != None:
         # Create time array of time strings rather than datetime objects
