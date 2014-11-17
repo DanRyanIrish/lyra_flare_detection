@@ -139,7 +139,7 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
     time_timedelta = clean_time[1:-1]-clean_time[0:-2]
     dt = np.zeros(len(time_timedelta), dtype="float64")
     for i, t, in enumerate(time_timedelta):
-        dt[i] = t.total_seconds()
+        dt[i] = timedelta_totalseconds(t)
     dfdt = np.gradient(clean_flux_scaled[0:-2], dt)
     # Get locations where derivative is positive
     pos_deriv = np.where(dfdt > 0)[0]
@@ -151,7 +151,7 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
     time_timedelta4 = clean_time[4:-1]-clean_time[0:-5]
     dt4 = np.zeros(len(time_timedelta4))
     for i, t, in enumerate(time_timedelta4):
-        dt4[i] = t.total_seconds()
+        dt4[i] = timedelta_totalseconds(t)
     # Find all possible flare start times.
     end_series = len(clean_flux_scaled)-1
     i=0
@@ -215,8 +215,7 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
                                 clean_time < artifact_at_end["begin_time"])
                             end_index = new_index[0][-1]
                         # find index of peak time
-                        peak_index = np.where(
-                          clean_flux_scaled == \
+                        peak_index = np.where(clean_flux_scaled == \
                             max(clean_flux_scaled[start_index:end_index]))
                         peak_index = peak_index[0][0]
                         # Record flare start, peak and end times
@@ -525,8 +524,12 @@ def extract_combined_lytaf(start_time, end_time, lytaf_path=LYTAF_PATH,
     combine_files.sort()
     # Convert input times to UNIX timestamp format since this is the
     # time format in the annotation files
-    start_time_uts = (start_time - datetime(1970, 1, 1)).total_seconds()
-    end_time_uts = (end_time - datetime(1970, 1, 1)).total_seconds()
+    #start_time_uts = (start_time - datetime(1970, 1, 1)).total_seconds()
+    #end_time_uts = (end_time - datetime(1970, 1, 1)).total_seconds()
+    start_time_uts_delta = (start_time - datetime(1970, 1, 1))
+    start_time_uts = timedelta_totalseconds(start_time_uts_delta)
+    end_time_uts_delta = (end_time - datetime(1970, 1, 1))
+    end_time_uts = timedelta_totalseconds(end_time_uts_delta)
 
     # Define numpy record array which will hold the information from
     # the annotation file.
@@ -538,9 +541,9 @@ def extract_combined_lytaf(start_time, end_time, lytaf_path=LYTAF_PATH,
                                ("event_definition", object)])
     # Access annotation files
     for i, suffix in enumerate(combine_files):
+        dbname = "annotation_{0}.db".format(suffix)
         # Open SQLITE3 annotation files
-        connection = sqlite3.connect(
-            os.path.join(lytaf_path, "annotation_{0}.db".format(suffix)))
+        connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
         # Create cursor to manipulate data in annotation file
         cursor = connection.cursor()
         # Select and extract the data from event table within file within
@@ -680,125 +683,11 @@ def _prep_columns(time, fluxes, filecolumns):
 
     return string_time, filecolumns
 
-def testing_find_lyra_events(find_events=False):
-    fitspath = "../data/LYRA/fits/"
-    #fitsname = "lyra_20100201-000000_lev3_std.fits"
-    #fitsname = "lyra_20100301-000000_lev3_std.fits"
-    #fitsname = "lyra_20100309-000000_lev3_std.fits"
-    #fitsname = "lyra_20100401-000000_lev3_std.fits"
-    #fitsname = "lyra_20100501-000000_lev3_std.fits"
-    #fitsname = "lyra_20100601-000000_lev3_std.fits"
-    #fitsname = "lyra_20100701-000000_lev3_std.fits"
-    #fitsname = "lyra_20100801-000000_lev3_std.fits"
-    #fitsname = "lyra_20100901-000000_lev3_std.fits"
-    #fitsname = "lyra_20101001-000000_lev3_std.fits"
-    #fitsname = "lyra_20101101-000000_lev3_std.fits"
-    #fitsname = "lyra_20101201-000000_lev3_std.fits"
-    #fitsname = "lyra_20110101-000000_lev3_std.fits"
-    #fitsname = "lyra_20110201-000000_lev3_std.fits"
-    #fitsname = "lyra_20110301-000000_lev3_std.fits"
-    #fitsname = "lyra_20110401-000000_lev3_std.fits"
-    #fitsname = "lyra_20110501-000000_lev3_std.fits"
-    #fitsname = "lyra_20110601-000000_lev3_std.fits"
-    #fitsname = "lyra_20110701-000000_lev3_std.fits"
-    #fitsname = "lyra_20110801-000000_lev3_std.fits"
-    #fitsname = "lyra_20110901-000000_lev3_std.fits"
-    #fitsname = "lyra_20111001-000000_lev3_std.fits"
-    #fitsname = "lyra_20111101-000000_lev3_std.fits"
-    #fitsname = "lyra_20111201-000000_lev3_std.fits"
-    #fitsname = "lyra_20120101-000000_lev3_std.fits"
-    #fitsname = "lyra_20120201-000000_lev3_std.fits"
-    #fitsname = "lyra_20120301-000000_lev3_std.fits"
-    #fitsname = "lyra_20120401-000000_lev3_std.fits"
-    #fitsname = "lyra_20120501-000000_lev3_std.fits"
-    #fitsname = "lyra_20120601-000000_lev3_std.fits"
-    #fitsname = "lyra_20120701-000000_lev3_std.fits"
-    #fitsname = "lyra_20120801-000000_lev3_std.fits"
-    #fitsname = "lyra_20120901-000000_lev3_std.fits"
-    #fitsname = "lyra_20121001-000000_lev3_std.fits"
-    #fitsname = "lyra_20121101-000000_lev3_std.fits"
-    #fitsname = "lyra_20121201-000000_lev3_std.fits"
-    #fitsname = "lyra_20130101-000000_lev3_std.fits"
-    #fitsname = "lyra_20130201-000000_lev3_std.fits"
-    #fitsname = "lyra_20130301-000000_lev3_std.fits"
-    #fitsname = "lyra_20130401-000000_lev3_std.fits"
-    #fitsname = "lyra_20130501-000000_lev3_std.fits"
-    #fitsname = "lyra_20130601-000000_lev3_std.fits"
-    #fitsname = "lyra_20130701-000000_lev3_std.fits"
-    #fitsname = "lyra_20130801-000000_lev3_std.fits"
-    #fitsname = "lyra_20130901-000000_lev3_std.fits"
-    #fitsname = "lyra_20131001-000000_lev3_std.fits"
-    #fitsname = "lyra_20131101-000000_lev3_std.fits"
-    #fitsname = "lyra_20131201-000000_lev3_std.fits"
-    fitsfile = fitspath + fitsname
-    ly = fits.open(fitsfile)
-    t = ly[1].data["TIME"]
-    orig_flux = ly[1].data["CHANNEL4"]
-    orig_time = np.empty(len(t), dtype="object")
-    for i, tt in enumerate(t):
-        orig_time[i] = datetime(int(fitsname[5:9]), int(fitsname[9:11]),
-                                int(fitsname[11:13]), 0, 0) + \
-                                timedelta(0,0,0,0,int(tt))
-    time = copy.deepcopy(orig_time)
-    flux = copy.deepcopy(orig_flux)
-    time, flux, artifacts = remove_lyra_artifacts(time, [flux],
-        artifacts=["UV occ.", "Offpoint", "LAR", "Calibration", "SAA",
-                   "Vis occ.", "Operational Anomaly", "Glitch", "ASIC reload",
-                   "Recovery"], return_artifacts=True)
-    flux = flux[0]
-    if find_events is False:
-        return orig_time, orig_flux, time, flux, artifacts
-    else:
-        ev = find_lyra_events(time, flux)
-        ind = []
-        start_ind = []
-        end_ind = []
-        for i in range(len(ev)):
-            ind.append(np.where(time==ev[i]["start_time"])[0][0])
-            ind.append(np.where(time==ev[i]["end_time"])[0][0])
-            start_ind.append(np.where(time==ev[i]["start_time"])[0][0])
-            end_ind.append(np.where(time==ev[i]["end_time"])[0][0])
-        plt.ion()
-        plt.plot(time, flux, 'o', color='blue')
-        plt.plot(time[start_ind], flux[start_ind], 'o', color='green')
-        plt.plot(time[end_ind], flux[end_ind], 'o', color='red')
-        return orig_time, orig_flux, time, flux, artifacts, ev, ind
+def timedelta_totalseconds(timedelta_obj):
+    """Manually implements timedelta.total_seconds() method.
 
-def test_cal():
-    lla = extract_combined_lytaf("2010-03-01", "2014-07-01",
-                                 combine_files=["lyra"])
-    ical = np.where(lla["event_type"] == u'Calibration')[0]
-    fitspath = "../data/LYRA/fits/"
-    i=0
-    st = lla["end_time"][ical[i]]
-    lytaf = extract_combined_lytaf(
-        "{0}-{1}-{2} 00:00".format(
-            st.year, st.strftime('%m'), st.strftime('%d')),
-            "{0}-{1}-{2} 23:59".format(
-            st.year, st.strftime('%m'), st.strftime('%d')))
-    fitsname = "lyra_{0}{1}{2}-000000_lev3_std.fits".format(
-        st.year, st.strftime('%m'), st.strftime('%d'))
-    fitsfile = fitspath + fitsname
-    urllib.urlretrieve(
-        "http://proba2.oma.be/lyra/data/bsd/{0}/{1}/{2}/{3}".format(
-            st.year, st.strftime('%m'), st.strftime('%d'), fitsname), fitsfile)
-    ly = fits.open(fitsfile)
-    flux = ly[1].data["CHANNEL4"]
-    t = ly[1].data["TIME"]
-    time = np.empty(len(t), dtype="object")
-    for j, tt in enumerate(t):
-        time[j] = datetime(int(fitsname[5:9]), int(fitsname[9:11]),
-                           int(fitsname[11:13]), 0, 0) + \
-                           timedelta(0,0,0,0,int(tt))
-    clean_time, fluxlist = remove_lyra_artifacts(time, [flux],
-        artifacts=["UV occ.", "Offpoint", "LAR", "Calibration", "SAA",
-                   "Vis occ.", "Operational Anomaly", "Glitch", "ASIC reload",
-                   "Moon in LYRA"])
-    clean_flux = fluxlist[0]
-    ly.close()
-    print lla["begin_time"][ical[i]], lla["end_time"][ical[i]]
-    plt.ion()
-    plt.plot(clean_time, clean_flux, 'o')
-    plt.title("{0}/{1}/{2}".format(clean_time[0].year, clean_time[0].month,
-                                   clean_time[0].day))
-    return lytaf
+    Compute total seconds manually to be compatible with Python 2.6.
+    See https://docs.python.org/2/library/datetime.html
+    """
+    return (timedelta_obj.microseconds + (timedelta_obj.seconds +
+                       timedelta_obj.days*24*3600) * 10**6) / 10**6
