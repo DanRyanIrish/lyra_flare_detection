@@ -3,21 +3,22 @@ from __future__ import division
 
 import os.path
 from datetime import datetime
+from datetime import timedelta
 from warnings import warn
 import copy
 import csv
 import urllib
 
 import numpy as np
-import pandas
 import sqlite3
+import pandas
 from itertools import chain
-from sunpy.time import parse_time
 from astropy.io import fits
-import sunpy.lightcurve as lightcurve
-from sunpy.util.net import check_file_download
 
-from datetime import timedelta
+from sunpy.time import parse_time
+from sunpy import config
+from sunpy.util import net
+
 import matplotlib.pyplot as plt
 
 RISE_FACTOR = 1.01
@@ -29,25 +30,111 @@ NORM = 0.001
 LYTAF_REMOTE_PATH = "http://proba2.oma.be/lyra/data/lytaf/"
 LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro",
                                              "lyra_flare_detection", "data"))
+LYRA_DATA_PATH = config.get("downloads", "download_dir")
+LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd"
 
-def lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH):
+def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
+                             exclude_eclipse_season=True):
     """
-    Returns a LYRA flare list based on an input start and end time.
+    Creates a LYRA flare list based on an input start and end time.
 
     Parameters
     ----------
     
 
     """
-    # Create LYRALightCurve object from start and end times
-    lyralc = lightcurve.LYRALightCurve.create(start_time, end_time, level=3)
-    # Convert to lightcurve time to datetime objects
-    dtlc = lyralc.data.index.to_pydatetime()
-    flux = np.asanyarray(lyralc.data["CHANNEL4"])
-    # Create LYRA event list
-    lyra_events = find_lyra_events(dtlc, flux, lytaf_path=lytaf_path)
-    # Return result
-    return lyra_events, dtlc, flux
+    # Ensure input start and end times are datetime objects
+    start_time = parse_time(start_time)
+    end_time = parse_time(end_time)
+    if start_time >= end_time:
+        raise InputError("Input start time after end time.")
+    # Create list of datetime objects for each day in time period.
+    start_until_end = end_time-start_time
+    dates = [start_time+timedelta(days=i) for i in range(start_until_end.days)]
+    # Exclude dates during LYRA eclipse season if keyword set and raise
+    # warning any dates are skipped.
+    if exclude_eclipse_season:
+        dates, skipped_dates = _remove_lyra_eclipse_dates(dates)
+    ##### Raise Warning here is dates are skipped #########
+
+    ##### Raise Error if no valid dates remain #######
+    if dates == []:
+        raise ValueError("No valid dates within input date range.")
+    # Define numpy recarray to store lyra event list from csv file
+    lyra_events = np.empty((0,), dtype=[("start_time", object),
+                                        ("peak_time", object),
+                                        ("end_time", object),
+                                        ("start_flux", float),
+                                        ("peak_flux", float),
+                                        ("end_flux", float)])
+    # Create list of required FITS files from dates, where consecutive
+    # files are contained in a sublist.  Download any not found locally.
+    fitsfiles = []
+    prev_date = dates[0]
+    for date in dates:
+        fitsfile = \
+          "lyra_{0}-000000_lev3_std.fits".format(date.strftime("%Y%m%d"))
+        net.check_download_file(fitsfile,
+                                "{0}/{1}".format(LYRA_REMOTE_DATA_PATH,
+                                                 date.strftime("%Y/%m/%d/")),
+                                LYRA_DATA_PATH)
+        if (date-prev_date).days == 1:
+            fitsfiles[-1].append(fitsfile)
+        else:
+            fitsfiles.append([fitsfile])
+        prev_date = copy.deepcopy(date)
+    for consecutive_files in fitsfiles:
+        # Get times and irradiances from first FITS file.
+        hdulist = fits.open(os.path.join(LYRA_DATA_PATH, consecutive_files[0]))
+        date = parse_time(hdulist[0].header["DATE-OBS"])
+        if hdulist[1].header["TUNIT1"] == "MIN":
+            t = [date+timedelta(minutes=int(tu))
+                 for tu in hdulist[1].data["TIME"]]
+        else:
+            raise ValueError("Time unit in FITS header not recognised."
+                             "  Must be 'MIN'.")
+        time = np.asanyarray(t)
+        flux = np.asanyarray(hdulist[1].data["CHANNEL4"])
+        # If there is no consecutive file before or after this one,
+        # apply flare detection to single day
+        if len(consecutive_files) == 1:
+            # Apply flare detection algorithm
+            lyra_events = np.append(lyra_events, find_lyra_events(
+                time, flux, lytaf_path=lytaf_path))
+        else:
+            # Else, if more than on file, apply flare detection
+            # algorithm in two day chunks, but iterate by only one day.
+            # This simulates the effect of the flare detection algorithm
+            # in the PROBA-2/LYRA pipeline being applied every day to
+            # the current and previous day.  This will give the same
+            # results as the official LYRA flare list.
+            prev_time = copy.deepcopy(time)
+            prev_flux = copy.deepcopy(flux)
+            for fitsfile in consecutive_files[1:]:
+                # Delete events in new events from previous day.
+                lyra_events = lyra_events[np.logical_not(np.logical_and(
+                    lyra_events["start_time"] >= prev_time[0],
+                    lyra_events["start_time"] < prev_time[-1]))]
+                # Get times and irradiances from FITS file.
+                hdulist = fits.open(os.path.join(LYRA_DATA_PATH, fitsfile))
+                date = parse_time(hdulist[0].header["DATE-OBS"])
+                if hdulist[1].header["TUNIT1"] == "MIN":
+                    t = [date+timedelta(minutes=int(tu))
+                         for tu in hdulist[1].data["TIME"]]
+                else:
+                    raise ValueError("Time unit in FITS header not recognised."
+                                     "  Must be 'MIN'.")
+                # concatenate time and flux from current fits file
+                # with that from previous consecutive fits file.
+                time = np.append(prev_time, np.asanyarray(t))
+                flux = np.append(prev_flux,
+                                 np.asanyarray(hdulist[1].data["CHANNEL4"]))
+                # Apply flare detection algorithm
+                lyra_events = np.append(lyra_events, find_lyra_events(
+                    time, flux, lytaf_path=lytaf_path))
+                prev_time = np.asanyarray(t)
+                prev_flux = np.asanyarray(hdulist[1].data["CHANNEL4"])
+    return lyra_events
 
 def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
     """
@@ -542,7 +629,7 @@ def extract_combined_lytaf(start_time, end_time, lytaf_path=LYTAF_PATH,
     for i, suffix in enumerate(combine_files):
         # Check database files are present
         dbname = "annotation_{0}.db".format(suffix)
-        util.check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
+        net.check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
         # Open SQLITE3 annotation files
         connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
         # Create cursor to manipulate data in annotation file
@@ -564,7 +651,7 @@ def extract_combined_lytaf(start_time, end_time, lytaf_path=LYTAF_PATH,
             cursor.close()
             connection.close()
             # ...Download latest lytaf file...
-            check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path,
+            net.check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path,
                                 replace=True)
             # ...and open new version of lytaf database.
             connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
@@ -705,6 +792,21 @@ def _prep_columns(time, fluxes, filecolumns):
             filecolumns = ["time"]
 
     return string_time, filecolumns
+
+def _remove_lyra_eclipse_dates(dates):
+    """Given a list of datetimes, removes those during LYRA eclipse season."""
+    non_eclipse_dates = [date for date in dates if date.month != 10 and
+                         date.month != 11 and date.month != 12 and
+                         date.month != 1 and date.month != 2]
+    non_eclipse_dates = [date for date in non_eclipse_dates
+                         if not (date.month == 9 and date.day > 15)]
+    non_eclipse_dates = [date for date in non_eclipse_dates
+                         if not (date.month == 3 and date.day < 15)]
+    non_eclipse_dates.sort()
+    # Determine skipped dates
+    skipped_dates = list(set(dates) - set(non_eclipse_dates))
+    skipped_dates.sort()
+    return non_eclipse_dates, skipped_dates
 
 def testing_find_lyra_events(find_events=False):
     fitspath = "../data/LYRA/fits/"
