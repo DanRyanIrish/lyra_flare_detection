@@ -50,9 +50,12 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     # warning any dates are skipped.
     if exclude_eclipse_season:
         dates, skipped_dates = _remove_lyra_eclipse_dates(dates)
-    ##### Raise Warning here is dates are skipped #########
-
-    ##### Raise Error if no valid dates remain #######
+    # Raise Warning here if dates are skipped
+    for date in skipped_dates:
+        warn("{0} has been skipped due to LYRA eclipse season.".format(date))
+    # Raise Error if no valid dates remain
+    if dates == []:
+        raise ValueError("No valid dates within input date range.")
     # Define numpy recarray to store lyra event list from csv file
     lyra_events = np.empty((0,), dtype=[("start_time", object),
                                         ("peak_time", object),
