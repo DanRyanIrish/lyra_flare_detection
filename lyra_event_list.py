@@ -17,7 +17,7 @@ from astropy.io import fits
 
 from sunpy.time import parse_time
 from sunpy import config
-from sunpy.util import net
+from sunpy.util.net import check_download_file
 
 import matplotlib.pyplot as plt
 
@@ -75,10 +75,10 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     for date in dates:
         fitsfile = \
           "lyra_{0}-000000_lev3_std.fits".format(date.strftime("%Y%m%d"))
-        net.check_download_file(fitsfile,
-                                "{0}/{1}".format(LYRA_REMOTE_DATA_PATH,
-                                                 date.strftime("%Y/%m/%d/")),
-                                LYRA_DATA_PATH)
+        check_download_file(fitsfile,
+                            "{0}/{1}".format(LYRA_REMOTE_DATA_PATH,
+                                             date.strftime("%Y/%m/%d/")),
+                            LYRA_DATA_PATH)
         if (date-prev_date).days == 1:
             fitsfiles[-1].append(fitsfile)
         else:
@@ -630,7 +630,7 @@ def extract_combined_lytaf(start_time, end_time, lytaf_path=LYTAF_PATH,
     for i, suffix in enumerate(combine_files):
         # Check database files are present
         dbname = "annotation_{0}.db".format(suffix)
-        net.check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
+        check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
         # Open SQLITE3 annotation files
         connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
         # Create cursor to manipulate data in annotation file
@@ -652,7 +652,7 @@ def extract_combined_lytaf(start_time, end_time, lytaf_path=LYTAF_PATH,
             cursor.close()
             connection.close()
             # ...Download latest lytaf file...
-            net.check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path,
+            check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path,
                                 replace=True)
             # ...and open new version of lytaf database.
             connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
