@@ -29,7 +29,6 @@ LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro",
 LYRA_DATA_PATH = config.get("downloads", "download_dir")
 LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd/"
 
-
 def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                              exclude_eclipse_season=True):
     """
@@ -66,7 +65,6 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     # Create list of required FITS files from dates, where consecutive
     # files are contained in a sublist.  Download any not found locally.
     fitsfiles = []
-    print dates
     prev_date = dates[0]
     for date in dates:
         fitsfile = \
@@ -80,8 +78,6 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
         else:
             fitsfiles.append([fitsfile])
         prev_date = copy.deepcopy(date)
-    for f in fitsfiles[0]:
-        print f
     for consecutive_files in fitsfiles:
         # Get times and irradiances from first FITS file.
         hdulist = fits.open(os.path.join(LYRA_DATA_PATH, consecutive_files[0]))
@@ -114,11 +110,9 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                 lyra_events = lyra_events[np.logical_not(np.logical_and(
                     lyra_events["start_time"] >= prev_time[0],
                     lyra_events["start_time"] < prev_time[-1]))]
-                print lyra_events["start_time"]
                 # Get times and irradiances from FITS file.
                 hdulist = fits.open(os.path.join(LYRA_DATA_PATH, fitsfile))
                 date = parse_time(hdulist[0].header["DATE-OBS"])
-                print date
                 if hdulist[1].header["TUNIT1"] == "MIN":
                     t = [date+timedelta(minutes=int(tu))
                          for tu in hdulist[1].data["TIME"]]
@@ -130,7 +124,6 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                 time = np.append(prev_time, np.asanyarray(t))
                 flux = np.append(prev_flux,
                                  np.asanyarray(hdulist[1].data["CHANNEL4"]))
-                print time[0], '  ', time[-1]
                 # Apply flare detection algorithm
                 lyra_events = np.append(lyra_events, find_lyra_events(
                     time, flux, lytaf_path=lytaf_path))
