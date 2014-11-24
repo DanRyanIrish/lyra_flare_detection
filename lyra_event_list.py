@@ -387,7 +387,7 @@ def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
     filecolumns : (optional) list of strings
         Gives names of columns of any output files produced.  Although
         initially set to None above, the default is in fact
-        ["time", "flux0", "flux1",..."fluxN"]
+        ["time", "property0", "property1",..."propertyN"]
         where N is the number of flux arrays in the fluxes input
         (assuming 0-indexed counting).
 
@@ -517,7 +517,7 @@ def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
         # and verify filecolumns have been correctly input.  If None,
         # generate generic filecolumns (see docstring og function called
         # below.
-        string_time, filecolumns = prep_columns(time, fluxes, filecolumns)
+        string_time, filecolumns = _prep_columns(time, fluxes, filecolumns)
         # Open and write data to csv file.
         with open(csvfile, 'w') as openfile:
             csvwriter = csv.writer(openfile, delimiter=';')
@@ -717,7 +717,7 @@ def _check_datetime(time):
     """
     Checks or tries to convert input array to array of datetime objects.
 
-    Returns input time array with elements as datetime objects or raises an
+    Returns input time array with elements as datetime objects or raises a
     TypeError if time not of valid format.  Input format can be anything
     convertible to datetime by datetime() function or any time string valid as
     an input to sunpy.time.parse_time().
@@ -752,18 +752,17 @@ def _prep_columns(time, fluxes, filecolumns):
 
     Firstly, this function converts the elements of time, whose entries are
     assumed to be datetime objects, to time strings.  Secondly, it checks
-    whether the number of elements in an input list of columns names,
+    whether the number of elements in an input list of column names,
     filecolumns, is equal to the number of arrays in the list, fluxes.  If not,
-    a Value Error is raised.  If however filecolumns equals None, a filenames
-    list is generated equal to ["time", "fluxes0", "fluxes1",...,"fluxesN"]
-    where N is the number of arrays in the list, fluxes
+    a ValueError is raised.  If however filecolumns equals None, a filenames
+    list is generated equal to ["time", "property0", "property1",...,
+    "propertyN"] where N is the number of arrays in the list, fluxes
     (assuming 0-indexed counting).
 
     """
     # Convert time which contains datetime objects to time strings.
-    string_time = np.empty(len(time), dtype="S26")
-    for i, t in enumerate(time):
-        string_time[i] = t.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    string_time = np.asarray(
+        [t.strftime("%Y-%m-%dT%H:%M:%S.%f") for t in time], dtype="S26")
 
     # If filenames is given...
     if filecolumns != None:
@@ -782,11 +781,11 @@ def _prep_columns(time, fluxes, filecolumns):
                              "equal to the number of input data arrays, "
                              "i.e. time + elements in fluxes.")
     # If filenames not given, create a list of columns names of the
-    # form: ["time", "fluxes0", "fluxes1",...,"fluxesN"] where N is the
-    # number of arrays in fluxes (assuming 0-indexed counting).
+    # form: ["time", "property0", "property1",...,"propertyN"] where N
+    # is the number of arrays in fluxes (assuming 0-indexed counting).
     else:
         if fluxes != None:
-            filecolumns = ["flux{0}".format(fluxnum)
+            filecolumns = ["property{0}".format(fluxnum)
                            for fluxnum in range(len(fluxes))]
             filecolumns.insert(0, "time")
         else:
