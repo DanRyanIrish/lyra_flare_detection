@@ -20,14 +20,12 @@ from sunpy.time import parse_time
 
 RISE_FACTOR = 1.01
 FALL_FACTOR = 0.5
-# Set mean daily minimum irradiance in Zr channel from first light
-# (Jan 2010) until mid 2014.
-NORM = 0.001
+NORM = 0.001  # mean daily minimum in LYRA Zr channel, Jan 2010 to mid 2014.
 
 LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro",
                                              "lyra_flare_detection", "data"))
 LYRA_DATA_PATH = config.get("downloads", "download_dir")
-LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd/"
+LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd"
 
 def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                              exclude_eclipse_season=True):
@@ -132,32 +130,32 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     return lyra_events
 
 
-def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
+def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
     """
     Finds events in a times series satisfying LYRA event definitions.
 
     This function finds events/flares in an input time series which satisfy
     the LYRA event definitions and returns the start, peak and end times
-    and fluxes.  The LYRA event definitions have been devised for the
+    and channels.  The LYRA event definitions have been devised for the
     Zirconium channel (channel 4).  For more info, see Notes section of this
     docstring.
 
     Parameters
     ----------
-    flux : ndarray/array-like convertible to float64, e.g. np.array, list
-        Contains flux/irradiance measurements
+    irradiance : ndarray/array-like convertible to float64, e.g. np.array, list
+        Contains irradiance measurements
     time : ndarray/array-like of of datetime objects, e.g. np.array, list
         Contains measurement times corresponding to each element in
-        flux.  Must be same length as flux.
+        irradiance.  Must be same length as irradiance.
     lytaf_path : string
         directory path where the LYRA annotation files are stored.
 
     Returns
     -------
     lyra_events : numpy recarray
-        Contains the start, peak and end times and flux values fo each event
-        found.  The fields of the recarray are: 'start_time', 'peak_time',
-        'end_time', 'start_flux', 'peak_flux', 'end_flux'.
+        Contains the start, peak and end times and irradiance values for each
+        event found.  The fields of the recarray are: 'start_time',
+        'peak_time', 'end_time', 'start_irrad', 'peak_irrad', 'end_irrad'.
 
     Notes
     -----
@@ -166,19 +164,20 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
 
     Start time definition:
     1) There must be 4 consecutive minutes when the gradient of the
-    1-minute-averaged flux is positive.
-    2) The flux in the 4th minute must be at least 1% greater than that in
-    the first minute.
-    3) The start time is then the earliest consecutive positive gradient before
-    the time identified by crieteria 1) and 2).
+    1-minute-averaged irradiance is positive.
+    2) The irradiance in the 4th minute must be at least 1% greater than that
+    in the first minute.
+    3) The start time is then the earliest consecutive positive gradient
+    before the time identified by crieteria 1) and 2).
     N.B. The time series is additively scaled so that the median is
-    0.001 W/m^2 (The mean flux for LYRA channel 4 from the start of the
+    0.001 W/m^2 (The mean irradiance for LYRA channel 4 from the start of the
     mission to mid 2014).  Criteria 2) is applied to this scaled data, not the
     observed.  This helps reduce the bias of detections due to variability in
-    the solar background flux.
+    the solar background irradiance.
 
     End time definition:
-    1) The flux must fall to half-way between the peak and initial fluxes.
+    1) The irradiance must fall to half-way between the peak and initial
+    irradiances.
     2) The end time is  then the latest consecutive negative gradient after
     the time identifie by criterion 1).
 
@@ -201,32 +200,34 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
     
     """
     # Ensure inputs are of correct type
-    flux = np.asanyarray(flux, dtype="float64")
+    irradiance = np.asanyarray(irradiance, dtype="float64")
     time = _check_datetime(time)
     # Define recarray to store results
     lyra_events = np.empty((0,), dtype=[("start_time", object),
                                         ("peak_time", object),
                                         ("end_time", object),
-                                        ("start_flux", float),
-                                        ("peak_flux", float),
-                                        ("end_flux", float)])
+                                        ("start_irrad", float),
+                                        ("peak_irrad", float),
+                                        ("end_irrad", float)])
     # object LYRA artifacts from timeseries
-    clean_time, fluxlist, artifact_status = remove_lyra_artifacts(time, [flux],
-        artifacts=["UV occ.", "Offpoint", "LAR", "Calibration", "SAA",
-                   "Vis occ.", "Operational Anomaly", "Glitch", "ASIC reload",
-                   "Moon in LYRA", "Recovery"], return_artifacts=True,
-                   lytaf_path=lytaf_path)
-    clean_flux = fluxlist[0]
+    clean_time, irradiance_list, artifact_status = remove_lytaf_events(
+        time, [irradiance], artifacts=["UV occ.", "Offpoint", "LAR", "SAA",
+                                       "Calibration", "Vis occ.", "Glitch",
+                                       "ASIC reload", "Operational Anomaly",
+                                       "Moon in LYRA", "Recovery"],
+        return_artifacts=True, lytaf_path=lytaf_path)
+    clean_irradiance = irradiance_list[0]
     artifacts_removed = artifact_status["removed"]
     # Perform subtraction so median irradiance of time series is at
     # average daily minimum from first 4 years of mission.
-    clean_flux_scaled = clean_flux - (np.median(clean_flux)-NORM)
-    # Get derivative of flux wrt time
+    clean_irradiance_scaled = \
+      clean_irradiance - (np.median(clean_irradiance)-NORM)
+    # Get derivative of irradiance wrt time
     time_timedelta = clean_time[1:-1]-clean_time[0:-2]
     dt = np.zeros(len(time_timedelta), dtype="float64")
     for i, t, in enumerate(time_timedelta):
         dt[i] = _timedelta_totalseconds(t)
-    dfdt = np.gradient(clean_flux_scaled[0:-2], dt)
+    dfdt = np.gradient(clean_irradiance_scaled[0:-2], dt)
     # Get locations where derivative is positive
     pos_deriv = np.where(dfdt > 0)[0]
     neg_deriv = np.where(dfdt < 0)[0]
@@ -239,16 +240,16 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
     for i, t, in enumerate(time_timedelta4):
         dt4[i] = _timedelta_totalseconds(t)
     # Find all possible flare start times.
-    end_series = len(clean_flux_scaled)-1
-    i=0
+    end_series = len(clean_irradiance_scaled)-1
+    i = 0
     while i < len(pos_deriv)-4:
         # Start time criteria
         if (pos_deriv[i:i+4]-pos_deriv[i] == np.arange(4)).all() and \
           dt4[pos_deriv[i]] > 210 and dt4[pos_deriv[i]] < 270 and \
-          clean_flux_scaled[pos_deriv[i+4]]/clean_flux_scaled[pos_deriv[i]] \
-          >= RISE_FACTOR:
+          clean_irradiance_scaled[pos_deriv[i+4]]/ \
+          clean_irradiance_scaled[pos_deriv[i]] >= RISE_FACTOR:
             # Find start time which is defined as earliest continuous
-            # increase in flux before the point found by the above
+            # increase in irradiance before the point found by the above
             # criteria.
             try:
                 k = np.where(neg_deriv0 < pos_deriv[i])[0][-1]
@@ -277,10 +278,9 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
                 end_condition = False
                 while end_condition == False and j < end_series:
                     j = j+1
-                    maxflux = max(clean_flux_scaled[start_index:j])
-                    end_condition = clean_flux_scaled[j] <= \
-                      maxflux-(maxflux-clean_flux_scaled[start_index]) \
-                      *FALL_FACTOR
+                    max_irradiance = max(clean_irradiance_scaled[start_index:j])
+                    end_condition = clean_irradiance_scaled[j] <= max_irradiance - \
+                      (max_irradiance-clean_irradiance_scaled[start_index])*FALL_FACTOR
                 if j >= end_series:
                     i = i+1
                 else:
@@ -301,8 +301,8 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
                                 clean_time < artifact_at_end["begin_time"])
                             end_index = new_index[0][-1]
                         # find index of peak time
-                        peak_index = np.where(clean_flux_scaled == \
-                            max(clean_flux_scaled[start_index:end_index]))
+                        peak_index = np.where(clean_irradiance_scaled == \
+                            max(clean_irradiance_scaled[start_index:end_index]))
                         peak_index = peak_index[0][0]
                         # Record flare start, peak and end times
                         lyra_events = np.append(
@@ -310,16 +310,16 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
                         lyra_events[-1]["start_time"] = clean_time[start_index]
                         lyra_events[-1]["peak_time"] = clean_time[peak_index]
                         lyra_events[-1]["end_time"] = clean_time[end_index]
-                        lyra_events[-1]["start_flux"] = clean_flux[start_index]
-                        lyra_events[-1]["peak_flux"] = clean_flux[peak_index]
-                        lyra_events[-1]["end_flux"] = clean_flux[end_index]
+                        lyra_events[-1]["start_irrad"] = clean_irradiance[start_index]
+                        lyra_events[-1]["peak_irrad"] = clean_irradiance[peak_index]
+                        lyra_events[-1]["end_irrad"] = clean_irradiance[end_index]
                         # If the most recently found flare is during the
                         # decay phase of another reset end time of
                         # previous flare to start time of this flare.
                         if len(lyra_events) > 1 and \
                           lyra_events[-2]["end_time"] > lyra_events[-1]["start_time"]:
                             lyra_events[-2]["end_time"] = lyra_events[-1]["start_time"]
-                            lyra_events[-2]["end_flux"] = lyra_events[-1]["start_flux"]
+                            lyra_events[-2]["end_irrad"] = lyra_events[-1]["start_irrad"]
                         # Finally, set principle iterator, i, to the
                         # peak of the flare just found so that algorithm
                         # will start looking for flares during the decay
@@ -332,10 +332,10 @@ def find_lyra_events(time, flux, lytaf_path=LYTAF_PATH):
 
     return lyra_events
 
-def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
-                          return_artifacts=False, fitsfile=None,
-                          csvfile=None, filecolumns=None,
-                          lytaf_path=LYTAF_PATH):
+def remove_lytaf_events(time, channels=None, artifacts="All",
+                        return_artifacts=False, fitsfile=None,
+                        csvfile=None, filecolumns=None,
+                        lytaf_path=LYTAF_PATH):
     """
     Removes periods of LYRA artifacts from a time series.
 
@@ -402,7 +402,7 @@ def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
         found, removed, etc. from the time series.
         artifact_status["lytaf"] = artifacts found : numpy recarray
             The full LYRA annotation file for the time series time range
-            output by extract_combined_lytaf().
+            output by get_lytaf_events().
         artifact_status["removed"] = artifacts removed : numpy recarray
             Artifacts which were found and removed from from time series.
         artifact_status["not_removed"] = artifacts found but not removed :
@@ -433,7 +433,7 @@ def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
     clean_fluxes = copy.deepcopy(fluxes)
     artifacts_not_found =[]
     # Get LYTAF file for given time range
-    lytaf = extract_combined_lytaf(time[0], time[-1], lytaf_path=lytaf_path)
+    lytaf = get_lytaf_events(time[0], time[-1], lytaf_path=lytaf_path)
     
     # Find events in lytaf which are to be removed from time series.
     if artifacts == "All":
@@ -540,9 +540,9 @@ def remove_lyra_artifacts(time, fluxes=None, artifacts="All",
         else:
             return clean_time, clean_fluxes
 
-def extract_combined_lytaf(start_time, end_time, lytaf_path=LYTAF_PATH,
-                           combine_files=["lyra", "manual", "ppt", "science"],
-                           csvfile=None):
+def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
+                     combine_files=["lyra", "manual", "ppt", "science"],
+                     csvfile=None):
     """
     Extracts combined lytaf file for given time range.
 
