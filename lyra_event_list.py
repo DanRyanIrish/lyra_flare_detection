@@ -8,12 +8,15 @@ from warnings import warn
 import copy
 import csv
 import urllib
+from urllib2 import HTTPError
+import urlparse
 
 import numpy as np
+import pandas.tseries.index
 import sqlite3
-import pandas
 from itertools import chain
 from astropy.io import fits
+
 from sunpy import config
 from sunpy.time import parse_time
 from sunpy.util.net import check_download_file
@@ -24,8 +27,8 @@ NORM = 0.001  # mean daily minimum in LYRA Zr channel, Jan 2010 to mid 2014.
 
 LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro",
                                              "lyra_flare_detection", "data"))
-LYRA_DATA_PATH = config.get("downloads", "download_dir")
-LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd"
+LYRA_DATA_PATH = os.path.expanduser(os.path.join("~", "pro", "data", "LYRA", "fits"))
+LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd/"
 
 def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                              exclude_occultation_season=True):
@@ -107,7 +110,7 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     dates = [start_time+timedelta(days=i) for i in range(start_until_end.days)]
     # Exclude dates during LYRA eclipse season if keyword set and raise
     # warning any dates are skipped.
-    if exclude_occulation_season:
+    if exclude_occultation_season:
         dates, skipped_dates = _remove_lyra_eclipse_dates(dates)
     # Raise Warning here if dates are skipped
     for date in skipped_dates:
@@ -129,15 +132,20 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     for date in dates:
         fitsfile = \
           "lyra_{0}-000000_lev3_std.fits".format(date.strftime("%Y%m%d"))
-        check_download_file(fitsfile,
-                            "{0}/{1}".format(LYRA_REMOTE_DATA_PATH,
-                                             date.strftime("%Y/%m/%d/")),
-                            LYRA_DATA_PATH)
-        if (date-prev_date).days == 1:
-            fitsfiles[-1].append(os.path.join(LYRA_DATA_PATH, fitsfile))
-        else:
-            fitsfiles.append([os.path.join(LYRA_DATA_PATH, fitsfile)])
-        prev_date = copy.deepcopy(date)
+        try:
+            check_download_file(fitsfile,
+                                "{0}/{1}".format(LYRA_REMOTE_DATA_PATH,
+                                                 date.strftime("%Y/%m/%d/")),
+                                LYRA_DATA_PATH)
+            if (date-prev_date).days == 1:
+                fitsfiles[-1].append(os.path.join(LYRA_DATA_PATH, fitsfile))
+            else:
+                fitsfiles.append([os.path.join(LYRA_DATA_PATH, fitsfile)])
+            prev_date = copy.deepcopy(date)
+        except HTTPError:
+            warn("Could not find {0}".format(urlparse.urljoin(
+                "{0}{1}".format(LYRA_REMOTE_DATA_PATH, date.strftime("%Y/%m/%d/")),
+                "lyra_{0}-000000_lev3_std.fits".format(date.strftime("%Y%m%d")))))
     # Perform flare detection on consecutive days
     for consecutive_files in fitsfiles:
         # When there are more than one consecutive fitsfile,
@@ -191,7 +199,6 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                 new_lyra_flares,
                 find_lyra_flares(time, irradiance, lytaf_path=lytaf_path))
     return new_lyra_flares
-
 
 def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
     """
@@ -260,7 +267,7 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
 
     Examples
     --------
-    
+
     """
     # Ensure inputs are of correct type
     irradiance = np.asanyarray(irradiance, dtype="float64")
@@ -855,8 +862,8 @@ def _remove_lyra_eclipse_dates(dates):
     skipped_dates = list(set(dates) - set(non_eclipse_dates))
     skipped_dates.sort()
     for skipped_date in skipped_dates:
-        warn "{0} skipped due to LYRA eclipse season".format(
-            skipped_date.strftime("%Y/%m/%d"))
+        warn("{0} skipped due to LYRA eclipse season".format(
+            skipped_date.strftime("%Y/%m/%d")))
     return non_eclipse_dates, skipped_dates
 
 def _time_list_from_header(hdu, date):
