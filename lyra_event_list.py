@@ -313,11 +313,13 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
     clean_irradiance_scaled = \
       clean_irradiance - (np.median(clean_irradiance)-NORM)
     # Get derivative of irradiance wrt time
-    time_timedelta = clean_time[1:-1]-clean_time[0:-2]
+    #time_timedelta = clean_time[1:-1]-clean_time[0:-2]
+    time_timedelta = clean_time[1:]-clean_time[:-1]
     dt = np.zeros(len(time_timedelta), dtype="float64")
     for i, t, in enumerate(time_timedelta):
         dt[i] = _timedelta_totalseconds(t)
-    dfdt = np.gradient(clean_irradiance_scaled[0:-2], dt)
+    #dfdt = np.gradient(clean_irradiance_scaled[0:-2], dt)
+    dfdt = np.gradient(clean_irradiance_scaled[:-1], dt)
     # Get locations where derivative is positive
     pos_deriv = np.where(dfdt > 0)[0]
     neg_deriv = np.where(dfdt < 0)[0]
@@ -325,18 +327,24 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
     neg_deriv0 = np.where(dfdt <= 0)[0]
     # Find difference between each time point and the one 4
     # observations ahead.
-    time_timedelta4 = clean_time[4:-1]-clean_time[0:-5]
+    #time_timedelta4 = clean_time[4:-1]-clean_time[0:-5]
+    time_timedelta4 = clean_time[3:]-clean_time[:-3]
     dt4 = np.zeros(len(time_timedelta4))
     for i, t, in enumerate(time_timedelta4):
         dt4[i] = _timedelta_totalseconds(t)
     # Find all possible flare start times.
     end_series = len(clean_irradiance_scaled)-1
     i = 0
-    while i < len(pos_deriv)-4:
+    #while i < len(pos_deriv)-4:
+    while i < len(pos_deriv)-3:
         # Start time criteria
-        if (pos_deriv[i:i+4]-pos_deriv[i] == np.arange(4)).all() and \
-          dt4[pos_deriv[i]] > 210 and dt4[pos_deriv[i]] < 270 and \
-          clean_irradiance_scaled[pos_deriv[i+4]]/ \
+        #if (pos_deriv[i:i+4]-pos_deriv[i] == np.arange(4)).all() and \
+        #  dt4[pos_deriv[i]] > 210 and dt4[pos_deriv[i]] < 270 and \
+        #  clean_irradiance_scaled[pos_deriv[i+4]]/ \
+        #  clean_irradiance_scaled[pos_deriv[i]] >= RISE_FACTOR:
+        if (pos_deriv[i:i+3]-pos_deriv[i] == np.arange(3)).all() and \
+          dt4[pos_deriv[i]] > 150 and dt4[pos_deriv[i]] < 210 and \
+          clean_irradiance_scaled[pos_deriv[i+3]]/ \
           clean_irradiance_scaled[pos_deriv[i]] >= RISE_FACTOR:
             # Find start time which is defined as earliest continuous
             # increase in irradiance before the point found by the above
