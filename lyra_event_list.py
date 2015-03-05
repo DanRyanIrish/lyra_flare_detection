@@ -2,8 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 
 import os.path
-from datetime import datetime
-from datetime import timedelta
+import datetime
 from warnings import warn
 import copy
 import csv
@@ -27,11 +26,12 @@ NORM = 0.001  # mean daily minimum in LYRA Zr channel, Jan 2010 to mid 2014.
 
 LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro",
                                              "lyra_flare_detection", "data"))
+LYTAF_REMOTE_PATH = "http://proba2.oma.be/lyra/data/lytaf/"
 LYRA_DATA_PATH = os.path.expanduser(os.path.join("~", "pro", "data", "LYRA", "fits"))
 LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd/"
 
 ARTIFACTS = ["UV occ.", "Offpoint", "LAR", "SAA", "Calibration", "ASIC reload",
-             "Vis occ.", "Glitch", "Operational Anomaly", "Moon in LYRA",
+             "Vis. occ.", "Glitch", "Operational Anomaly", "Moon in LYRA",
              "Recovery"]
 
 def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
@@ -111,7 +111,7 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     end_time = parse_time(end_time)
     # Create list of datetime objects for each day in time period.
     start_until_end = end_time-start_time
-    dates = [start_time+timedelta(days=i) for i in range(start_until_end.days)]
+    dates = [start_time+datetime.timedelta(days=i) for i in range(start_until_end.days)]
     # Exclude dates during LYRA eclipse season if keyword set and raise
     # warning any dates are skipped.
     if exclude_occultation_season:
@@ -295,6 +295,48 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
     # Ensure inputs are of correct type
     irradiance = np.asanyarray(irradiance, dtype="float64")
     time = _check_datetime(time)
+    # object LYRA artifacts from timeseries
+    clean_time, irradiance_list, artifact_status = remove_lytaf_events(
+        time, [irradiance], artifacts=ARTIFACTS, return_artifacts=True,
+        lytaf_path=lytaf_path)
+    clean_irradiance = irradiance_list[0]
+    # Apply LYRAFF
+    lyra_flares = apply_lyraff(clean_time, clean_irradiance,
+                               artifacts_removed=artifact_status["removed"])
+
+    return lyra_flares
+
+def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
+    """
+    Applies LYRAFF (LYRA Flare Finder) algorithm to a time series.
+
+    Parameters
+    ----------
+    clean_time : ndarray/array-like of datetime objects
+        measurement times with any relevant artifacts removed.
+
+    clean_irradiance : ndarrays/array-like convertible to float64
+        irradiance measurements with an relevant arifacts removed.
+
+    artifact_removed : `numpy.recarray` or None
+        Details of any artifacts removed.  Must be of same structure as
+        artifact_status["removed"] output by remove_lytaf_events().
+        Default=False, i.e. no artifacts removed
+
+    Returns
+    -------
+    lyra_flares : numpy recarray
+        Contains the start, peak and end times and irradiance values for each
+        event found.  The fields of the recarray are: 'start_time',
+        'peak_time', 'end_time', 'start_irrad', 'peak_irrad', 'end_irrad'.
+
+    Examples
+    --------
+
+    """
+    # Ensure inputs are of correct type
+    clean_irradiance = np.asanyarray(clean_irradiance, dtype="float64")
+    clean_time = _check_datetime(clean_time)
     # Define recarray to store results
     lyra_flares = np.empty((0,), dtype=[("start_time", object),
                                         ("peak_time", object),
@@ -302,16 +344,11 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
                                         ("start_irrad", float),
                                         ("peak_irrad", float),
                                         ("end_irrad", float)])
-    # object LYRA artifacts from timeseries
-    clean_time, irradiance_list, artifact_status = remove_lytaf_events(
-        time, [irradiance], artifacts=ARTIFACTS, return_artifacts=True,
-        lytaf_path=lytaf_path)
-    clean_irradiance = irradiance_list[0]
-    artifacts_removed = artifact_status["removed"]
     # Perform subtraction so median irradiance of time series is at
     # average daily minimum from first 4 years of mission.
-    clean_irradiance_scaled = \
-      clean_irradiance - (np.median(clean_irradiance)-NORM)
+    ##clean_irradiance_scaled = \
+    ##  clean_irradiance - (np.median(clean_irradiance)-NORM)
+    clean_irradiance_scaled = clean_irradiance
     # Get derivative of irradiance wrt time
     #time_timedelta = clean_time[1:-1]-clean_time[0:-2]
     time_timedelta = clean_time[1:]-clean_time[:-1]
@@ -357,14 +394,15 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
             start_index = pos_deriv[kk]
             # If artifact is at start of flare, set start time to
             # directly afterwards.
-            artifact_check = np.logical_and(
-                artifacts_removed["end_time"] > clean_time[start_index],
-                artifacts_removed["end_time"] < clean_time[pos_deriv[kk+2]])
-            if artifact_check.any() == True:
-                artifact_at_start = artifacts_removed[artifact_check][-1]
-                new_index = np.where(
-                    clean_time[pos_deriv] > artifact_at_start["end_time"])
-                start_index = pos_deriv[new_index[0][0]]
+            if artifacts_removed != False:
+                artifact_check = np.logical_and(
+                    artifacts_removed["end_time"] > clean_time[start_index],
+                    artifacts_removed["end_time"] < clean_time[pos_deriv[kk+2]])
+                if artifact_check.any() == True:
+                    artifact_at_start = artifacts_removed[artifact_check][-1]
+                    new_index = np.where(
+                        clean_time[pos_deriv] > artifact_at_start["end_time"])
+                    start_index = pos_deriv[new_index[0][0]]
             # Next, find index of flare end time.
             # If flare has not ended, do not record it.
             try:
@@ -390,14 +428,15 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
                         end_index = pos_deriv0[m]-1
                         # If artifact is at end of flare, set end time
                         # to directly beforehand.
-                        artifact_check = np.logical_and(
-                            artifacts_removed["begin_time"] < clean_time[end_index],
-                            artifacts_removed["begin_time"] > clean_time[end_index-2])
-                        if artifact_check.any() == True:
-                            artifact_at_end = artifacts_removed[artifact_check][0]
-                            new_index = np.where(
-                                clean_time < artifact_at_end["begin_time"])
-                            end_index = new_index[0][-1]
+                        if artifacts_removed != False:
+                            artifact_check = np.logical_and(
+                                artifacts_removed["begin_time"] < clean_time[end_index],
+                                artifacts_removed["begin_time"] > clean_time[end_index-2])
+                            if artifact_check.any() == True:
+                                artifact_at_end = artifacts_removed[artifact_check][0]
+                                new_index = np.where(
+                                    clean_time < artifact_at_end["begin_time"])
+                                end_index = new_index[0][-1]
                         # find index of peak time
                         peak_index = np.where(clean_irradiance_scaled == \
                             max(clean_irradiance_scaled[start_index:end_index]))
@@ -430,16 +469,16 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
 
     return lyra_flares
 
-def remove_lytaf_events(time, fluxes=None, artifacts="All",
+def remove_lytaf_events(time, channels=None, artifacts=None,
                         return_artifacts=False, fitsfile=None,
                         csvfile=None, filecolumns=None,
-                        lytaf_path=LYTAF_PATH):
+                        lytaf_path=None, force_use_local_lytaf=False):
     """
     Removes periods of LYRA artifacts from a time series.
 
     This functions removes periods corresponding to certain artifacts recorded
     in the LYRA annotation file from an array of times given by the time input.
-    If a list of arrays of other properties is supplied through the fluxes
+    If a list of arrays of other properties is supplied through the channels
     kwarg, then the relevant values from these arrays are also removed.  This
     is done by assuming that each element in each array supplied corresponds to
     the time in the same index in time array.  The artifacts to be removed are
@@ -449,65 +488,72 @@ def remove_lytaf_events(time, fluxes=None, artifacts="All",
 
     Parameters
     ----------
-    time : ndarray/array-like of datetime objects
+    time : `numpy.ndarray` of `datetime.datetime`
         Gives the times of the timeseries.
 
-    fluxes : (optional) list of ndarrays/array-likes convertible to float64.
-        Contains the fluxes/properties taken at the times in the time array.
-        Each element in the list must have the same number of elements as time.
+    channels : `list` of `numpy.array` convertible to float64.
+        Contains arrays of the irradiances taken at the times in the time
+        variable.  Each element in the list must have the same number of
+        elements as time.
 
-    artifacts : list of strings
+    artifacts : `list` of strings
         Contain the artifact types to be removed.  For list of artifact types
         see reference [1].  For example, if user wants to remove only large
         angle rotations, listed at reference [1] as LAR, let artifacts=["LAR"].
-        Default='All', i.e. all artifacts will be removed.
+        Default=[], i.e. no artifacts will be removed.
 
-    return_artifacts : (optional) bool
+    return_artifacts : `bool`
         Set to True to return a numpy recarray containing the start time, end
         time and type of all artifacts removed.
         Default=False
 
-    fitsfile : (optional) string
+    fitsfile : `str`
         file name (including file path and suffix, .fits) of output fits file
         which is generated if this kwarg is not None.
         Default=None, i.e. no fits file is output.
 
-    csvfile : (optional) string
+    csvfile : `str`
         file name (including file path and suffix, .csv) of output csv file
         which is generated if this kwarg is not None.
         Default=None, i.e. no csv file is output.
 
-    filecolumns : (optional) list of strings
+    filecolumns : `list` of strings
         Gives names of columns of any output files produced.  Although
         initially set to None above, the default is in fact
-        ["time", "flux0", "flux1",..."fluxN"]
-        where N is the number of flux arrays in the fluxes input
+        ["time", "channel0", "channel1",..."channelN"]
+        where N is the number of irradiance arrays in the channels input
         (assuming 0-indexed counting).
 
-    lytaf_path : string
+    lytaf_path : `str`
         directory path where the LYRA annotation files are stored.
-        
+
+    force_use_local_lytaf : `bool`
+        Ensures current local version of lytaf files are not replaced by
+        up-to-date online versions even if current local lytaf files do not
+        cover entire input time range etc.
+        Default=False
+
     Returns
     -------
-    clean_time : ndarray/array-like of datetime objects
+    clean_time : `numpy.ndarray` of `datetime.datetime`
         time array with artifact periods removed.
 
-    clean_fluxes : (optional) list ndarrays/array-likes convertible to float64
-        list of fluxes with artifact periods removed.
+    clean_channels : `list` ndarrays/array-likes convertible to float64
+        list of irradiance arrays with artifact periods removed.
 
-    artifact_status : (optional) dictionary
+    artifact_status : `dict`
         List of 4 variables containing information on what artifacts were
         found, removed, etc. from the time series.
-        artifact_status["lytaf"] = artifacts found : numpy recarray
+        artifact_status["lytaf"] = artifacts found : `numpy.recarray`
             The full LYRA annotation file for the time series time range
             output by get_lytaf_events().
-        artifact_status["removed"] = artifacts removed : numpy recarray
+        artifact_status["removed"] = artifacts removed : `numpy.recarray`
             Artifacts which were found and removed from from time series.
         artifact_status["not_removed"] = artifacts found but not removed :
-              numpy recarray
+              `numpy.recarray`
             Artifacts which were found but not removed as they were not
             included when user defined artifacts kwarg.
-        artifact_status["not_found"] = artifacts not found : list of strings
+        artifact_status["not_found"] = artifacts not found : `list` of strings
             Artifacts listed to be removed by user when defining artifacts
             kwarg which were not found in time series time range.
 
@@ -517,45 +563,60 @@ def remove_lytaf_events(time, fluxes=None, artifacts="All",
 
     Example
     -------
+    Sample data for example
+        >>> time = np.array([datetime(2013, 2, 1)+timedelta(minutes=i)
+                             for i in range(120)])
+        >>> channel_1 = np.zeros(len(TIME))+0.4
+        >>> channel_2 = np.zeros(len(TIME))+0.1
+    Remove LARs (Large Angle Rotations) from time series.
+        >>> time_clean, channels_clean = remove_lyra_artifacts(
+              time, channels=[channel_1, channel2], artifacts=['LAR'])
 
     """
     # Check inputs
-    time = _check_datetime(time)
+    if not lytaf_path:
+        lytaf_path = LYTAF_PATH
+    if channels and type(channels) is not list:
+        raise TypeError("channels must be None or a list of numpy arrays "
+                        "of dtype 'float64'.")
+    if not artifacts:
+        raise ValueError("User has supplied no artifacts to remove.")
+    if type(artifacts) is str:
+      artifacts = [artifacts]
     if not all(isinstance(artifact_type, str) for artifact_type in artifacts):
         raise TypeError("All elements in artifacts must in strings.")
-    if type(fluxes) is not None and type(fluxes) is not list:
-        raise TypeError("fluxes must be None or a list of numpy arrays of "
-                        "dtype 'float64'.")
+    all_lytaf_event_types = get_lytaf_event_types(lytaf_path=lytaf_path,
+                                                  print_event_types=False)
+    for artifact in artifacts:
+        if not artifact in all_lytaf_event_types:
+            print all_lytaf_event_types
+            raise ValueError("{0} is not a valid artifact type. See above.".format(artifact))
     # Define outputs
-    clean_time = copy.deepcopy(time)
-    clean_fluxes = copy.deepcopy(fluxes)
-    artifacts_not_found =[]
+    clean_time = np.array([parse_time(t) for t in time])
+    clean_channels = copy.deepcopy(channels)
+    artifacts_not_found = []
     # Get LYTAF file for given time range
-    lytaf = get_lytaf_events(time[0], time[-1], lytaf_path=lytaf_path)
-    
+    lytaf = get_lytaf_events(time[0], time[-1], lytaf_path=lytaf_path,
+                             force_use_local_lytaf=force_use_local_lytaf)
+
     # Find events in lytaf which are to be removed from time series.
-    if artifacts == "All":
-        artifact_indices = np.arange(len(lytaf["begin_time"]))
-    else:
-        artifact_indices = np.empty(0, dtype="int64")
-        for artifact_type in artifacts:
-            indices = np.where(lytaf["event_type"] == artifact_type)[0]
-            # If none of a given type of artifact is found, record this
-            # type in artifact_not_found list.
-            if len(indices) == 0:
-                artifacts_not_found.append(artifact_type)
-            else:
-                # Else, record the indices of the artifacts of this type
-                artifact_indices = np.concatenate((artifact_indices, indices))
-        artifact_indices.sort()
+    artifact_indices = np.empty(0, dtype="int64")
+    for artifact_type in artifacts:
+        indices = np.where(lytaf["event_type"] == artifact_type)[0]
+        # If none of a given type of artifact is found, record this
+        # type in artifact_not_found list.
+        if len(indices) == 0:
+            artifacts_not_found.append(artifact_type)
+        else:
+            # Else, record the indices of the artifacts of this type
+            artifact_indices = np.concatenate((artifact_indices, indices))
+    artifact_indices.sort()
 
     # Remove relevant artifacts from timeseries. If none of the
     # artifacts the user wanted removed were found, raise a warning and
     # continue with code.
-    if len(artifact_indices) == 0:
-        warn("None of user supplied artifacts were found. {0} -- {1}".format(
-            time[0].strftime("%Y-%m-%d %H:%M:%S.%f"),
-            time[-1].strftime("%Y-%m-%d %H:%M:%S.%f")))
+    if not len(artifact_indices):
+        warn("None of user supplied artifacts were found.")
         artifacts_not_found = artifacts
     else:
         # Remove periods corresponding to artifacts from flux and time
@@ -566,38 +627,29 @@ def remove_lytaf_events(time, fluxes=None, artifacts="All",
             bad_period = np.logical_and(time >= lytaf["begin_time"][index],
                                         time <= lytaf["end_time"][index])
             bad_indices = np.append(bad_indices, all_indices[bad_period])
-        clean_time = np.delete(time, bad_indices)
-        if fluxes is not None:
-            for i, f in enumerate(clean_fluxes):
-                clean_fluxes[i] = np.delete(f, bad_indices)
+        clean_time = np.delete(clean_time, bad_indices)
+        if channels:
+            for i, f in enumerate(clean_channels):
+                clean_channels[i] = np.delete(f, bad_indices)
     # If return_artifacts kwarg is True, return a list containing
     # information on what artifacts found, removed, etc.  See docstring.
-    if return_artifacts is True:
-        if artifacts_not_found == artifacts:
-            artifact_status = {"lytaf": lytaf,
-                               "removed": lytaf[artifact_indices],
-                               "not_removed": None,
-                               "not_found": artifacts_not_found}
-        else:
-            artifacts_removed = lytaf[artifact_indices]
-            artifacts_not_removed = np.delete(lytaf, artifact_indices)
-            if artifacts == "All":
-                artifacts_not_found = None
-            artifact_status = {"lytaf": lytaf, "removed": artifacts_removed,
-                               "not_removed": artifacts_not_removed,
-                               "not_found": artifacts_not_found}
+    if return_artifacts:
+        artifact_status = {"lytaf": lytaf,
+                           "removed": lytaf[artifact_indices],
+                           "not_removed": np.delete(lytaf, artifact_indices),
+                           "not_found": artifacts_not_found}
     # Output FITS file if fits kwarg is set
-    if fitsfile != None:
+    if fitsfile:
         # Create time array of time strings rather than datetime objects
         # and verify filecolumns have been correctly input.  If None,
-        # generate generic filecolumns (see docstring og function called
+        # generate generic filecolumns (see docstring of function called
         # below.
-        string_time, filecolumns = _prep_columns(time, fluxes, filecolumns)
+        string_time, filecolumns = _prep_columns(time, channels, filecolumns)
         # Prepare column objects.
         cols = [fits.Column(name=filecolumns[0], format="26A",
                             array=string_time)]
-        if fluxes != None:
-            for i, f in enumerate(fluxes):
+        if channels:
+            for i, f in enumerate(channels):
                 cols.append(fits.Column(name=filecolumns[i+1], format="D",
                                         array=f))
         coldefs = fits.ColDefs(cols)
@@ -606,43 +658,43 @@ def remove_lytaf_events(time, fluxes=None, artifacts="All",
         tbhdulist = fits.HDUList([hdu, tbhdu])
         # Write data to fits file.
         tbhdulist.writeto(fitsfile)
-    # Output csv file if fits kwarg is set.
-    if csvfile != None:
+    # Output csv file if csv kwarg is set.
+    if csvfile:
         # Create time array of time strings rather than datetime objects
         # and verify filecolumns have been correctly input.  If None,
-        # generate generic filecolumns (see docstring og function called
+        # generate generic filecolumns (see docstring of function called
         # below.
-        string_time, filecolumns = prep_columns(time, fluxes, filecolumns)
+        string_time, filecolumns = _prep_columns(time, channels, filecolumns)
         # Open and write data to csv file.
         with open(csvfile, 'w') as openfile:
             csvwriter = csv.writer(openfile, delimiter=';')
             # Write header.
             csvwriter.writerow(filecolumns)
             # Write data.
-            if fluxes == None:
+            if not channels:
                 for i in range(len(time)):
                     csvwriter.writerow(string_time[i])
             else:
                 for i in range(len(time)):
                     row = [string_time[i]]
-                    for f in fluxes:
+                    for f in channels:
                         row.append(f[i])
                     csvwriter.writerow(row)
     # Return values.
-    if return_artifacts is True:
-        if fluxes is None:
+    if return_artifacts:
+        if not channels:
             return clean_time, artifact_status
         else:
-            return clean_time, clean_fluxes, artifact_status
+            return clean_time, clean_channels, artifact_status
     else:
-        if fluxes is None:
+        if not channels:
             return clean_time
         else:
-            return clean_time, clean_fluxes
+            return clean_time, clean_channels
 
-def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
-                     combine_files=["lyra", "manual", "ppt", "science"],
-                     csvfile=None):
+def get_lytaf_events(start_time, end_time, lytaf_path=None,
+                     combine_files=("lyra", "manual", "ppt", "science"),
+                     csvfile=None, force_use_local_lytaf=False):
     """
     Extracts combined lytaf file for given time range.
 
@@ -651,33 +703,46 @@ def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
 
     Parameters
     ----------
-    start_time : datetime object or string
+    start_time : `datetime.datetime` or `str`
         Start time of period for which annotation file is required.
-    end_time : datetime object or string
+
+    end_time : `datetime.datetime` or `str`
         End time of period for which annotation file is required.
-    lytaf_path : string
+
+    lytaf_path : `str`
         directory path where the LYRA annotation files are stored.
-    combine_files : (optional) list of strings
+
+    combine_files : `tuple` of strings
         States which LYRA annotation files are to be combined.
         Default is all four, i.e. lyra, manual, ppt, science.
         See Notes section for an explanation of each.
 
+    force_use_local_lytaf : `bool`
+        Ensures current local version of lytaf files are not replaced by
+        up-to-date online versions even if current local lytaf files do not
+        cover entire input time range etc.
+        Default=False
+
     Returns
     -------
-    lytaf : numpy record array containing the various parameters stored
-        in the LYTAF files.
+    lytaf : `numpy.recarray`
+        Containsing the various parameters stored in the LYTAF files.
 
     Notes
     -----
     There are four LYRA annotation files which mark different types of events
     or artifacts in the data.  They are named annotation_suffix.db where
     suffix is a variable equalling either lyra, manual, ppt, or science.
+
     annotation_lyra.db : contains entries regarding possible effects to
         the data due to normal operation of LYRA instrument.
+
     annotation_manual.db : contains entries regarding possible effects
         to the data due to unusual or manually logged events.
+
     annotation_ppt.db : contains entries regarding possible effects to
         the data due to pointing or positioning of PROBA2.
+
     annotation_science.db : contains events in the data scientifically
         interesting, e.g. GOES flares.
 
@@ -687,51 +752,71 @@ def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
 
     Examples
     --------
-    
+    Get all events in the LYTAF files for January 2014
+        >>> lytaf = get_lytaf_events('2014-01-01', '2014-02-01')
+
     """
     # Check inputs
-    # Check start_time is a date string or datetime object
-    if type(start_time) is str:
-        start_time = parse_time(start_time)
-    if type(start_time) is not datetime:
-        raise TypeError("start_time must be a date string or datetime object")
-    # Check start_time is a date string or datetime object
-    if type(end_time) is str:
-        end_time = parse_time(end_time)
-    if type(end_time) is not datetime:
-        raise TypeError("end_time must be a date string or datetime object")
+    # Check lytaf path
+    if not lytaf_path:
+        lytaf_path = LYTAF_PATH
+    # Check start_time and end_time is a date string or datetime object
+    start_time = parse_time(start_time)
+    end_time = parse_time(end_time)
     # Check combine_files contains correct inputs
     if not all(suffix in ["lyra", "manual", "ppt", "science"]
                for suffix in combine_files):
-        raise TypeError("Elements in combine_files must be strings equalling "
-                        "'lyra', 'manual', 'ppt', or 'science'.")
+        raise ValueError("Elements in combine_files must be strings equalling "
+                         "'lyra', 'manual', 'ppt', or 'science'.")
     # Remove any duplicates from combine_files input
     combine_files = list(set(combine_files))
     combine_files.sort()
     # Convert input times to UNIX timestamp format since this is the
     # time format in the annotation files
-    #start_time_uts = (start_time - datetime(1970, 1, 1)).total_seconds()
-    #end_time_uts = (end_time - datetime(1970, 1, 1)).total_seconds()
-    start_time_uts_delta = (start_time - datetime(1970, 1, 1))
-    start_time_uts = _timedelta_totalseconds(start_time_uts_delta)
-    end_time_uts_delta = (end_time - datetime(1970, 1, 1))
-    end_time_uts = _timedelta_totalseconds(end_time_uts_delta)
+    start_time_uts = (start_time - datetime.datetime(1970, 1, 1)).total_seconds()
+    end_time_uts = (end_time - datetime.datetime(1970, 1, 1)).total_seconds()
 
     # Define numpy record array which will hold the information from
     # the annotation file.
     lytaf = np.empty((0,), dtype=[("insertion_time", object),
-                               ("begin_time", object),
-                               ("reference_time", object),
-                               ("end_time", object),
-                               ("event_type", object),
-                               ("event_definition", object)])
+                                  ("begin_time", object),
+                                  ("reference_time", object),
+                                  ("end_time", object),
+                                  ("event_type", object),
+                                  ("event_definition", object)])
     # Access annotation files
-    for i, suffix in enumerate(combine_files):
+    for suffix in combine_files:
+        # Check database files are present
         dbname = "annotation_{0}.db".format(suffix)
+        check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
         # Open SQLITE3 annotation files
         connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
         # Create cursor to manipulate data in annotation file
         cursor = connection.cursor()
+        # Check if lytaf file spans the start and end times defined by
+        # user.  If not, download newest version.
+        # First get start time of first event and end time of last
+        # event in lytaf.
+        cursor.execute("select begin_time from event order by begin_time asc "
+                       "limit 1;")
+        db_first_begin_time = cursor.fetchone()[0]
+        db_first_begin_time = datetime.datetime.fromtimestamp(db_first_begin_time)
+        cursor.execute("select end_time from event order by end_time desc "
+                       "limit 1;")
+        db_last_end_time = cursor.fetchone()[0]
+        db_last_end_time = datetime.datetime.fromtimestamp(db_last_end_time)
+        # If lytaf does not include entire input time range...
+        if not force_use_local_lytaf:
+            if end_time > db_last_end_time or start_time < db_first_begin_time:
+                # ...close lytaf file...
+                cursor.close()
+                connection.close()
+                # ...Download latest lytaf file...
+                check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path,
+                                    replace=True)
+                # ...and open new version of lytaf database.
+                connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
+                cursor = connection.cursor()
         # Select and extract the data from event table within file within
         # given time range
         cursor.execute("select insertion_time, begin_time, reference_time, "
@@ -753,14 +838,13 @@ def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
         # Enter desired information into the lytaf numpy record array
         for event_row in event_rows:
             id_index = eventType_id.index(event_row[4])
-            lytaf = np.append(
-                lytaf, np.array((datetime.utcfromtimestamp(event_row[0]),
-                                 datetime.utcfromtimestamp(event_row[1]),
-                                 datetime.utcfromtimestamp(event_row[2]),
-                                 datetime.utcfromtimestamp(event_row[3]),
-                                 eventType_type[id_index],
-                                 eventType_definition[id_index]),
-                                 dtype=lytaf.dtype))
+            lytaf = np.append(lytaf,
+                              np.array((datetime.datetime.utcfromtimestamp(event_row[0]),
+                                        datetime.datetime.utcfromtimestamp(event_row[1]),
+                                        datetime.datetime.utcfromtimestamp(event_row[2]),
+                                        datetime.datetime.utcfromtimestamp(event_row[3]),
+                                        eventType_type[id_index],
+                                        eventType_definition[id_index]), dtype=lytaf.dtype))
         # Close file
         cursor.close()
         connection.close()
@@ -768,7 +852,7 @@ def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
     np.recarray.sort(lytaf, order="begin_time")
 
     # If csvfile kwarg is set, write out lytaf to csv file
-    if csvfile != None:
+    if csvfile:
         # Open and write data to csv file.
         with open(csvfile, 'w') as openfile:
             csvwriter = csv.writer(openfile, delimiter=';')
@@ -785,7 +869,6 @@ def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
                 new_row.append(row[5])
                 csvwriter.writerow(new_row)
 
-    #return event_rows, eventType_rows
     return lytaf
 
 def _check_datetime(time):
@@ -798,14 +881,14 @@ def _check_datetime(time):
     an input to sunpy.time.parse_time().
 
     """
-    if (np.array([type(t) for t in time]) == datetime).all():
+    if (np.array([type(t) for t in time]) == datetime.datetime).all():
         new_time = np.asanyarray(time)
     elif type(time) == pandas.tseries.index.DatetimeIndex:
         new_time = time.to_pydatetime()
     else:
         # If elements of time are not datetime objects, try converting.
         try:
-            new_time = np.array([datetime(t) for t in time])
+            new_time = np.array([datetime.datetime(t) for t in time])
         except TypeError:
             try:
                 # If cannot be converted simply, elements may be strings
@@ -820,6 +903,53 @@ def _check_datetime(time):
             raise TypeError("time must be an array or array-like of "
                             "datetime objects or valid time strings.")
     return new_time
+
+def get_lytaf_event_types(lytaf_path=None, print_event_types=True):
+    """Prints the different event types in the each of the LYTAF databases.
+
+    Parameters
+    ----------
+    lytaf_path : `str`
+        Path location where LYTAF files are stored.
+        Default = LYTAF_PATH defined above.
+
+    print_event_types : `bool`
+        If True, prints the artifacts in each lytaf database to screen.
+
+    Returns
+    -------
+    all_event_types : `list`
+        List of all events types in all lytaf databases.
+
+    """
+    # Set lytaf_path is not done by user
+    if not lytaf_path:
+        lytaf_path = LYTAF_PATH
+    suffixes = ["lyra", "manual", "ppt", "science"]
+    all_event_types = []
+    # For each database file extract the event types and print them.
+    if print_event_types:
+        print "\nLYTAF Event Types\n-----------------\n"
+    for suffix in suffixes:
+        dbname = "annotation_{0}.db".format(suffix)
+        # Check database file exists, else download it.
+        check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
+        # Open SQLITE3 LYTAF files
+        connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
+        # Create cursor to manipulate data in annotation file
+        cursor = connection.cursor()
+        cursor.execute("select type from eventType;")
+        event_types = cursor.fetchall()
+        all_event_types.append(event_types)
+        if print_event_types:
+            print "----------------\n{0} database\n----------------".format(suffix)
+            for event_type in event_types:
+                print str(event_type[0])
+            print " "
+    # Unpack event types in all_event_types into single list
+    all_event_types = [event_type[0] for event_types in all_event_types
+                       for event_type in event_types]
+    return all_event_types
 
 def _prep_columns(time, fluxes, filecolumns):
     """
@@ -898,13 +1028,13 @@ def _time_list_from_lyra_fits(hdulist):
     if hdulist[1].header["TUNIT1"] == "MIN":
         #start_time = datetime.strptime(hdulist[0].header["DATE"], "%Y-%m-%d")
         start_time = parse_time(hdulist[0].header["DATE-OBS"])
-        start_time = datetime(start_time.year, start_time.month,
+        start_time = datetime.datetime(start_time.year, start_time.month,
                               start_time.day)
         if hdulist[1].header["TUNIT1"] == "MIN":
-            t = [start_time+timedelta(minutes=int(tu))
+            t = [start_time+datetime.timedelta(minutes=int(tu))
                  for tu in hdulist[1].data["TIME"]]
         elif hdulist[1].header["TUNIT1"] == "s":
-            t = [start_time+timedelta(seconds=int(tu))
+            t = [start_time+datetime.timedelta(seconds=int(tu))
                  for tu in hdulist[1].data["TIME"]]
         else:
             raise ValueError(
