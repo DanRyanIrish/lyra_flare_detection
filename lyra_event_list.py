@@ -37,6 +37,114 @@ ARTIFACTS = ["UV occ.", "Offpoint", "LAR", "SAA", "Calibration", "ASIC reload",
 def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                              exclude_occultation_season=True):
     """
+    Generates a LYRA flare list without rescaling data.
+
+    Parameters
+    ----------
+    start_time : time format compatible by sunpy.time.parse_time()
+        start time of period for flare list to be generated.
+
+    end_time : time format compatible by sunpy.time.parse_time()
+        end time of period for flare list to be generated.
+
+    lytaf_path : string
+        directory path where the LYRA annotation files are stored.
+
+    exclude_eclipse_season : bool
+        Determines whether LYRA UV Occulation season is discarded from
+        input period.  Default=True.
+
+    Returns
+    -------
+    new_lyra_flares : numpy recarray
+        Each row holds infomation on a flare found by the LYRA flare
+        detection algorithm.  Each column holds the following information.
+        ["start_time"] : start time of the flare.  datetime object
+        ["peak_time"] : peak time of the flare.  datetime object
+        ["end_time"] : end time of the flare.  datetime object
+        ["start_irrad"] : irradiance value at start time of flare.  float
+        ["peak_irrad"] : irradiance value at peak time of flare.  float
+        ["end_irrad"] : irradiance value at end time of flare.  float
+
+    Notes
+    -----
+    This function calls a version of find_lyra_flares() to detect flares.  The
+    data is not rescaled to remove effect of background variation.For the flare
+    definitions, see the Notes in the docstring of find_lyra_flares(),
+    below.
+
+    In addition, the LYRA flare list is currently not run during the LYRA
+    occulation season during which LYRA periodically passes behind the
+    Earth (mid-September to mid-March).  This is because the artifacts in
+    the data can not currently be removed and cause find_lyra_flares() to
+    be unreliable.  Therefore, by default the kwarg
+    exclude_occultation_season=True which ensures that the algorithm is
+    not run during these months, even if they are included in the time
+    period input by the user.  It does not affect other parts of the time
+    period input by the user.  This can be disabled by setting the
+    exclude_occultation_season=False.  However, the results produced
+    during the occultation season will not be reliable.  It is currently
+    highly recommended that the exclude_occultation_season kwarg is left
+    at True.
+
+    Examples
+    --------
+    To reproduce the LYRA flare list for 2010
+        >>> lyra_flares_2010 = generate_lyra_flare_list("2010-01-01", "2011-01-01")
+
+    """
+    # Ensure input start and end times are datetime objects
+    start_time = parse_time(start_time)
+    end_time = parse_time(end_time)
+    # Create list of datetime objects for each day in time period.
+    start_until_end = end_time-start_time
+    dates = [start_time+timedelta(days=i) for i in range(start_until_end.days)]
+    # Exclude dates during LYRA eclipse season if keyword set and raise
+    # warning any dates are skipped.
+    if exclude_occultation_season:
+        dates, skipped_dates = _remove_lyra_occultation_dates(dates)
+    # Raise Warning here if dates are skipped
+    for date in skipped_dates:
+        warn("{0} has been skipped due to LYRA eclipse season.".format(date))
+    # Raise Error if no valid dates remain
+    if dates == []:
+        raise ValueError("No valid dates within input date range.")
+    # Define numpy recarray to store lyra event list from csv file
+    new_lyra_flares = np.empty((0,), dtype=[("start_time", object),
+                                            ("peak_time", object),
+                                            ("end_time", object),
+                                            ("start_irrad", float),
+                                            ("peak_irrad", float),
+                                            ("end_irrad", float)])
+    # Search for daily FITS files for input time period.
+    # First, create empty arrays to hold entire time series of input
+    # time range.
+    times = np.empty(0, dtype=object)
+    irradiance = np.empty(0)
+    for date in dates:
+        fitsfile = \
+          "lyra_{0}-000000_lev3_std.fits".format(date.strftime("%Y%m%d"))
+        # Check each fitsfile exists locally.  If not, download it.
+        try:
+            check_download_file(fitsfile,
+                                "{0}/{1}".format(LYRA_REMOTE_DATA_PATH,
+                                                 date.strftime("%Y/%m/%d/")),
+                                LYRA_DATA_PATH)
+            # Append data in files to time series
+            hdulist = fits.open(os.path.join(LYRA_DATA_PATH, fitsfile))
+            times = np.append(times, np.asanyarray(_time_list_from_lyra_fits(hdulist)))
+            irradiance = np.append(irradiance, np.asanyarray(hdulist[1].data["CHANNEL4"]))
+        except HTTPError:
+            warn("Could not find {0}.  Skipping date.".format(urlparse.urljoin(
+                "{0}{1}".format(LYRA_REMOTE_DATA_PATH, date.strftime("%Y/%m/%d/")),
+                fitsfile)))
+    # Find flares by calling find_lyra_flares
+    lyra_flares = find_lyra_flares(times, irradiance, lytaf_path=lytaf_path)
+    return lyra_flares
+
+def _generate_lyra_event_list_scaled(start_time, end_time, lytaf_path=LYTAF_PATH,
+                                    exclude_occultation_season=True):
+    """
     Generates a LYRA flare list in the same way as in the LYRA data pipeline.
 
     Parameters
