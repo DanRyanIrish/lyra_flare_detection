@@ -22,10 +22,10 @@ from sunpy.util.net import check_download_file
 
 RISE_FACTOR = 1.01
 FALL_FACTOR = 0.5
-NORM = 0.001  # mean daily minimum in LYRA Zr channel, Jan 2010 to mid 2014.
+FIRST_FLARE_FALL_FACTOR = 0.2
+#NORM = 0.001  # mean daily minimum in LYRA Zr channel, Jan 2010 to mid 2014.
 
-LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro",
-                                             "lyra_flare_detection", "data"))
+LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro", "data", "LYRA", "LYTAF"))
 LYTAF_REMOTE_PATH = "http://proba2.oma.be/lyra/data/lytaf/"
 LYRA_DATA_PATH = os.path.expanduser(os.path.join("~", "pro", "data", "LYRA", "fits"))
 LYRA_REMOTE_DATA_PATH = "http://proba2.oma.be/lyra/data/bsd/"
@@ -93,37 +93,89 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
         >>> lyra_flares_2010 = generate_lyra_flare_list("2010-01-01", "2011-01-01")
 
     """
+    # Produce time series for input dates.
+    data = create_lyra_time_series(
+        start_time, end_time, level=3, channels=[4], lytaf_path=lytaf_path,
+        exclude_occultation_season=exclude_occultation_season)
+    # Find flares by calling find_lyra_flares
+    lyra_flares = find_lyra_flares(times, irradiance, lytaf_path=lytaf_path)
+    return lyra_flares
+
+def create_lyra_time_series(start_time, end_time, level=3, channels=[4],
+                            lytaf_path=LYTAF_PATH,
+                            exclude_occultation_season=True):
+    """
+    Creates a time series of LYRA standard Unit 2 data.
+
+    Parameters
+    ----------
+    start_time : time format compatible by sunpy.time.parse_time()
+        start time of period for flare list to be generated.
+
+    end_time : time format compatible by sunpy.time.parse_time()
+        end time of period for flare list to be generated.
+
+    level : `int` equal to 1, 2, or 3.
+        LYRA data level.
+        1: raw data
+        2: calibrated data
+        3: one minuted-averaged data
+
+    channels : `list` of ints in range 1-4 inclusive.
+        Channels for which time series are to be created.
+        1: Lyman Alpha
+        2: Herzberg
+        3: Aluminium
+        4: Zirconium
+
+    lytaf_path : string
+        directory path where the LYRA annotation files are stored.
+
+    exclude_eclipse_season : bool
+        Determines whether LYRA UV Occulation season is discarded from
+        input period.  Default=True.
+
+    Returns
+    -------
+    data : `numpy.recarray`
+        Time series for input period containing time and irradiance
+        values for each channel.
+
+    Examples
+    --------
+
+    """
+    # Check that inputs are correct.
+    if not level in range(1,4):
+        raise ValueError("level must be an int equal to 1, 2, or 3.")
+    if not all(channels) in range(1,5):
+        raise ValueError("Values in channels must be ints equal to 1, 2, 3, or 4.")
     # Ensure input start and end times are datetime objects
     start_time = parse_time(start_time)
     end_time = parse_time(end_time)
     # Create list of datetime objects for each day in time period.
     start_until_end = end_time-start_time
-    dates = [start_time+timedelta(days=i) for i in range(start_until_end.days)]
+    dates = [start_time+datetime.timedelta(days=i)
+             for i in range(start_until_end.days)]
     # Exclude dates during LYRA eclipse season if keyword set and raise
     # warning any dates are skipped.
     if exclude_occultation_season:
         dates, skipped_dates = _remove_lyra_occultation_dates(dates)
-    # Raise Warning here if dates are skipped
-    for date in skipped_dates:
-        warn("{0} has been skipped due to LYRA eclipse season.".format(date))
+        # Raise Warning here if dates are skipped
+        for date in skipped_dates:
+            warn("{0} has been skipped due to LYRA eclipse season.".format(date))
     # Raise Error if no valid dates remain
     if dates == []:
         raise ValueError("No valid dates within input date range.")
-    # Define numpy recarray to store lyra event list from csv file
-    new_lyra_flares = np.empty((0,), dtype=[("start_time", object),
-                                            ("peak_time", object),
-                                            ("end_time", object),
-                                            ("start_irrad", float),
-                                            ("peak_irrad", float),
-                                            ("end_irrad", float)])
     # Search for daily FITS files for input time period.
     # First, create empty arrays to hold entire time series of input
     # time range.
-    times = np.empty(0, dtype=object)
-    irradiance = np.empty(0)
+    data_dtypes = [("CHANNEL{0}".format(channel), float) for channel in channels]
+    data_dtypes.insert(0, ("TIME", object))
+    data = np.empty((0,), dtype=data_dtypes)
     for date in dates:
-        fitsfile = \
-          "lyra_{0}-000000_lev3_std.fits".format(date.strftime("%Y%m%d"))
+        fitsfile = "lyra_{0}-000000_lev{1}_std.fits".format(
+            date.strftime("%Y%m%d"), level)
         # Check each fitsfile exists locally.  If not, download it.
         try:
             check_download_file(fitsfile,
@@ -131,16 +183,19 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
                                                  date.strftime("%Y/%m/%d/")),
                                 LYRA_DATA_PATH)
             # Append data in files to time series
-            hdulist = fits.open(os.path.join(LYRA_DATA_PATH, fitsfile))
-            times = np.append(times, np.asanyarray(_time_list_from_lyra_fits(hdulist)))
-            irradiance = np.append(irradiance, np.asanyarray(hdulist[1].data["CHANNEL4"]))
+            with fits.open(os.path.join(LYRA_DATA_PATH, fitsfile)) as hdulist:
+                n = len(hdulist[1].data)
+                data = np.append(data, np.empty((n,), dtype=data_dtypes))
+                data["TIME"][-n:] = _time_list_from_lyra_fits(hdulist)
+                for channel in channels:
+                    data["CHANNEL{0}".format(channel)][-n:] = \
+                      hdulist[1].data["CHANNEL{0}".format(channel)]
         except HTTPError:
             warn("Could not find {0}.  Skipping date.".format(urlparse.urljoin(
-                "{0}{1}".format(LYRA_REMOTE_DATA_PATH, date.strftime("%Y/%m/%d/")),
-                fitsfile)))
-    # Find flares by calling find_lyra_flares
-    lyra_flares = find_lyra_flares(times, irradiance, lytaf_path=lytaf_path)
-    return lyra_flares
+                "{0}{1}".format(LYRA_REMOTE_DATA_PATH,
+                                date.strftime("%Y/%m/%d/")), fitsfile)))
+    return data
+    
 
 def _generate_lyra_event_list_scaled(start_time, end_time, lytaf_path=LYTAF_PATH,
                                     exclude_occultation_season=True):
@@ -408,6 +463,10 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
         time, [irradiance], artifacts=ARTIFACTS, return_artifacts=True,
         lytaf_path=lytaf_path)
     clean_irradiance = irradiance_list[0]
+    # Remove data points <= 0
+    w = np.logical_and(clean_irradiance > 0., clean_irradiance < 10.)
+    clean_time = clean_time[w]
+    clean_irradiance = clean_irradiance[w]
     # Apply LYRAFF
     lyra_flares = apply_lyraff(clean_time, clean_irradiance,
                                artifacts_removed=artifact_status["removed"])
@@ -451,131 +510,122 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
                                         ("end_time", object),
                                         ("start_irrad", float),
                                         ("peak_irrad", float),
-                                        ("end_irrad", float)])
-    # Perform subtraction so median irradiance of time series is at
-    # average daily minimum from first 4 years of mission.
-    ##clean_irradiance_scaled = \
-    ##  clean_irradiance - (np.median(clean_irradiance)-NORM)
-    clean_irradiance_scaled = clean_irradiance
-    # Get derivative of irradiance wrt time
-    #time_timedelta = clean_time[1:-1]-clean_time[0:-2]
-    time_timedelta = clean_time[1:]-clean_time[:-1]
-    dt = np.zeros(len(time_timedelta), dtype="float64")
-    for i, t, in enumerate(time_timedelta):
-        dt[i] = _timedelta_totalseconds(t)
-    #dfdt = np.gradient(clean_irradiance_scaled[0:-2], dt)
-    dfdt = np.gradient(clean_irradiance_scaled[:-1], dt)
-    # Get locations where derivative is positive
-    pos_deriv = np.where(dfdt > 0)[0]
-    neg_deriv = np.where(dfdt < 0)[0]
-    pos_deriv0 = np.where(dfdt >= 0)[0]
-    neg_deriv0 = np.where(dfdt <= 0)[0]
-    # Find difference between each time point and the one 4
-    # observations ahead.
-    #time_timedelta4 = clean_time[4:-1]-clean_time[0:-5]
-    time_timedelta4 = clean_time[3:]-clean_time[:-3]
-    dt4 = np.zeros(len(time_timedelta4))
-    for i, t, in enumerate(time_timedelta4):
-        dt4[i] = _timedelta_totalseconds(t)
-    # Find all possible flare start times.
-    end_series = len(clean_irradiance_scaled)-1
+                                        ("end_irrad", float),
+                                        ("end_time_comment", 'a40')])
+    # Iterate through time series to find where flare start criteria
+    # are satisfied.
+    end_series = len(clean_irradiance)-1
     i = 0
-    #while i < len(pos_deriv)-4:
-    while i < len(pos_deriv)-3:
-        # Start time criteria
-        #if (pos_deriv[i:i+4]-pos_deriv[i] == np.arange(4)).all() and \
-        #  dt4[pos_deriv[i]] > 210 and dt4[pos_deriv[i]] < 270 and \
-        #  clean_irradiance_scaled[pos_deriv[i+4]]/ \
-        #  clean_irradiance_scaled[pos_deriv[i]] >= RISE_FACTOR:
-        if (pos_deriv[i:i+3]-pos_deriv[i] == np.arange(3)).all() and \
-          dt4[pos_deriv[i]] > 150 and dt4[pos_deriv[i]] < 210 and \
-          clean_irradiance_scaled[pos_deriv[i+3]]/ \
-          clean_irradiance_scaled[pos_deriv[i]] >= RISE_FACTOR:
+    while i < end_series-3:
+        print "i = ", i, end_series
+        # Check if current time satisfies flare reference start
+        # criteria.
+        if datetime.timedelta(seconds=150) <= \
+          clean_time[i+3]-clean_time[i] <= datetime.timedelta(seconds=210) and \
+          all(clean_irradiance[i+1:i+4]-clean_irradiance[i:i+3] > 0.) and \
+          clean_irradiance[i+3] >= clean_irradiance[i]*RISE_FACTOR:
             # Find start time which is defined as earliest continuous
-            # increase in irradiance before the point found by the above
-            # criteria.
-            try:
-                k = np.where(neg_deriv0 < pos_deriv[i])[0][-1]
-                kk = np.where(pos_deriv > neg_deriv0[k])[0][0]
-            except IndexError:
-                kk = i
-            start_index = pos_deriv[kk]
+            # increase in irradiance before the point found by the
+            # above criteria.
+            k = i
+            while clean_irradiance[k-1] < clean_irradiance[k]:
+                k = k-1
+            start_index = k
             # If artifact is at start of flare, set start time to
             # directly afterwards.
             if artifacts_removed != False:
                 artifact_check = np.logical_and(
                     artifacts_removed["end_time"] > clean_time[start_index],
-                    artifacts_removed["end_time"] < clean_time[pos_deriv[kk+2]])
+                    artifacts_removed["end_time"] < clean_time[start_index+2])
                 if artifact_check.any() == True:
                     artifact_at_start = artifacts_removed[artifact_check][-1]
-                    new_index = np.where(
-                        clean_time[pos_deriv] > artifact_at_start["end_time"])
-                    start_index = pos_deriv[new_index[0][0]]
-            # Next, find index of flare end time.
-            # If flare has not ended, do not record it.
-            try:
-                jj = np.where(neg_deriv > start_index)[0][0]
-            except IndexError:
-                i = i+1
-            else:
-                j = neg_deriv[jj]
-                end_condition = False
-                while end_condition == False and j < end_series:
-                    j = j+1
-                    max_irradiance = max(clean_irradiance_scaled[start_index:j])
-                    end_condition = clean_irradiance_scaled[j] <= max_irradiance - \
-                      (max_irradiance-clean_irradiance_scaled[start_index])*FALL_FACTOR
-                if j >= end_series:
-                    i = i+1
+                    start_index = np.where(clean_time > artifact_at_start["end_time"])[0][0]
+            # Find time when flare signal descends by
+            # FIRST_FLARE_FALL_FACTOR.
+            j = i+4
+            while clean_irradiance[j] > \
+              np.max(clean_irradiance[start_index:j])-\
+              (np.max(clean_irradiance[start_index:j])-\
+              clean_irradiance[start_index])*FIRST_FLARE_FALL_FACTOR \
+              and j < end_series: # and j < n-1:
+                j = j+1
+                #print "j = ", j, end_series
+            # Once flare signal has descended by FIRST_FLARE_FALL_FACTOR,
+            # start searching for when current flare ends or a new flare
+            # starts.
+            end_condition = False
+            while end_condition == False and j < end_series:
+                end_time_comment = ""
+                # Check if flare has ended.
+                if clean_irradiance[j] < \
+                  np.max(clean_irradiance[i:j])-(np.max(clean_irradiance[i:j])-\
+                  clean_irradiance[i])*FALL_FACTOR:
+                    # Once flare reference end criteria have been met,
+                    # find time of next increase in flare signal.
+                    while clean_irradiance[j] > clean_irradiance[j+1]:
+                        j = j+1
+                    end_index = j
+                    print "j = ", end_index
+                    print " "
+                    # If artifact is at end of flare, set end time
+                    # to directly beforehand.
+                    if artifacts_removed != False:
+                        artifact_check = np.logical_and(
+                          artifacts_removed["begin_time"] < clean_time[end_index],
+                          artifacts_removed["begin_time"] > clean_time[end_index-2])
+                        if artifact_check.any() == True:
+                            artifact_at_end = artifacts_removed[artifact_check][0]
+                            new_index = np.where(clean_time < artifact_at_end["begin_time"])
+                            j = new_index[0][-1]
+                            end_index = j
+                    # Since flare end has been found, set end_condition to True
+                    end_condition = True
+                    end_time_comment = "Final end criterion found."
+                # Check if another flare has started.
+                elif datetime.timedelta(seconds=150) <= \
+                  clean_time[i+3]-clean_time[i] <= datetime.timedelta(seconds=210) and \
+                  (clean_irradiance[i+1:i+4]-clean_irradiance[i:i+3]).all() > 0. \
+                  and clean_irradiance[i+3] >= clean_irradiance[i]*RISE_FACTOR:
+                    # If a new flare is detected before current one
+                    # ends, set end time of current flare to start time
+                    # of next flare and iterate to move onto next flare.
+                    end_index = j
+                    end_condition = True
+                    end_time_comment = "Another flare found during decay phase."
+                    print end_index
+                    print " "
+                # Else iterate and check next measurement.
                 else:
-                    try:
-                        m = np.where(pos_deriv0 > j)[0][0]
-                    except IndexError:
-                        i = i+1
-                    else:
-                        end_index = pos_deriv0[m]-1
-                        # If artifact is at end of flare, set end time
-                        # to directly beforehand.
-                        if artifacts_removed != False:
-                            artifact_check = np.logical_and(
-                                artifacts_removed["begin_time"] < clean_time[end_index],
-                                artifacts_removed["begin_time"] > clean_time[end_index-2])
-                            if artifact_check.any() == True:
-                                artifact_at_end = artifacts_removed[artifact_check][0]
-                                new_index = np.where(
-                                    clean_time < artifact_at_end["begin_time"])
-                                end_index = new_index[0][-1]
-                        # find index of peak time
-                        peak_index = np.where(clean_irradiance_scaled == \
-                            max(clean_irradiance_scaled[start_index:end_index]))
-                        peak_index = peak_index[0][0]
-                        # Record flare start, peak and end times
-                        lyra_flares = np.append(
-                            lyra_flares, np.empty(1, dtype=lyra_flares.dtype))
-                        lyra_flares[-1]["start_time"] = clean_time[start_index]
-                        lyra_flares[-1]["peak_time"] = clean_time[peak_index]
-                        lyra_flares[-1]["end_time"] = clean_time[end_index]
-                        lyra_flares[-1]["start_irrad"] = clean_irradiance[start_index]
-                        lyra_flares[-1]["peak_irrad"] = clean_irradiance[peak_index]
-                        lyra_flares[-1]["end_irrad"] = clean_irradiance[end_index]
-                        # If the most recently found flare is during the
-                        # decay phase of another reset end time of
-                        # previous flare to start time of this flare.
-                        if len(lyra_flares) > 1 and \
-                          lyra_flares[-2]["end_time"] > lyra_flares[-1]["start_time"]:
-                            lyra_flares[-2]["end_time"] = lyra_flares[-1]["start_time"]
-                            lyra_flares[-2]["end_irrad"] = lyra_flares[-1]["start_irrad"]
-                        # Finally, set principle iterator, i, to the
-                        # peak of the flare just found so that algorithm
-                        # will start looking for flares during the decay
-                        # phase of this flare and beyond.  This ensures
-                        # that flares during the decay phase are also
-                        # located.
-                        i = np.where(pos_deriv > peak_index)[0][0]
+                    j = j+1
+            # Give warning if final flare end time caused by end of time series
+            if j == end_series:
+                end_time_comment = "Time series ended before flare."
+                raise warn(
+                    "Final flare's end time caused by end of time series, not flare end criteria.")
+            # Record flare.
+            # Find peak index of flare
+            peak_index = np.where(clean_irradiance[start_index:end_index] == \
+                                  max(clean_irradiance[start_index:end_index]))
+            peak_index = peak_index[0][0]+start_index
+            # Record flare start, peak and end times
+            lyra_flares = np.append(lyra_flares, np.empty(1, dtype=lyra_flares.dtype))
+            lyra_flares[-1]["start_time"] = clean_time[start_index]
+            lyra_flares[-1]["peak_time"] = clean_time[peak_index]
+            lyra_flares[-1]["end_time"] = clean_time[end_index]
+            lyra_flares[-1]["start_irrad"] = clean_irradiance[start_index]
+            lyra_flares[-1]["peak_irrad"] = clean_irradiance[peak_index]
+            lyra_flares[-1]["end_irrad"] = clean_irradiance[end_index]
+            lyra_flares[-1]["end_time_comment"] = end_time_comment
+            # Set principle iterator, i, to flare end index to begin
+            # searching for next flare
+            i = end_index
         else:
+            # If this time does not satisfy start reference criteria,
+            # try next measurement.
             i = i+1
 
     return lyra_flares
+
 
 def remove_lytaf_events(time, channels=None, artifacts=None,
                         return_artifacts=False, fitsfile=None,
@@ -704,12 +754,15 @@ def remove_lytaf_events(time, channels=None, artifacts=None,
     clean_channels = copy.deepcopy(channels)
     artifacts_not_found = []
     # Get LYTAF file for given time range
+    print "Getting LYTAF events."
     lytaf = get_lytaf_events(time[0], time[-1], lytaf_path=lytaf_path,
                              force_use_local_lytaf=force_use_local_lytaf)
+    print "Got LYTAF events."
 
     # Find events in lytaf which are to be removed from time series.
     artifact_indices = np.empty(0, dtype="int64")
     for artifact_type in artifacts:
+        print "Seeking indices of {0}".format(artifact_type)
         indices = np.where(lytaf["event_type"] == artifact_type)[0]
         # If none of a given type of artifact is found, record this
         # type in artifact_not_found list.
@@ -718,6 +771,7 @@ def remove_lytaf_events(time, channels=None, artifacts=None,
         else:
             # Else, record the indices of the artifacts of this type
             artifact_indices = np.concatenate((artifact_indices, indices))
+        print "Found indices of {0}".format(artifact_type)
     artifact_indices.sort()
 
     # Remove relevant artifacts from timeseries. If none of the
@@ -731,7 +785,9 @@ def remove_lytaf_events(time, channels=None, artifacts=None,
         # arrays.
         bad_indices = np.empty(0, dtype="int64")
         all_indices = np.arange(len(time))
+        nn = len(artifact_indices)
         for index in artifact_indices:
+            print "Removing {0}th artifact of {1}".format(index, nn)
             bad_period = np.logical_and(time >= lytaf["begin_time"][index],
                                         time <= lytaf["end_time"][index])
             bad_indices = np.append(bad_indices, all_indices[bad_period])
@@ -894,6 +950,7 @@ def get_lytaf_events(start_time, end_time, lytaf_path=None,
                                   ("event_definition", object)])
     # Access annotation files
     for suffix in combine_files:
+        print "Accessing {0} database.".format(suffix)
         # Check database files are present
         dbname = "annotation_{0}.db".format(suffix)
         check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
@@ -943,8 +1000,13 @@ def get_lytaf_events(start_time, end_time, lytaf_path=None,
             eventType_id.append(eventType_row["id"])
             eventType_type.append(eventType_row["type"])
             eventType_definition.append(eventType_row["definition"])
+        print "Entering {0} entries into recarray.".format(suffix)
         # Enter desired information into the lytaf numpy record array
+        mm = len(event_rows)
+        ii=-1
         for event_row in event_rows:
+            ii=ii+1
+            print "Entering {0}th row of {1} in recarray.".format(ii, mm)
             id_index = eventType_id.index(event_row[4])
             lytaf = np.append(lytaf,
                               np.array((datetime.datetime.utcfromtimestamp(event_row[0]),
