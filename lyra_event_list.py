@@ -6,16 +6,15 @@ import datetime
 from warnings import warn
 import copy
 import csv
-import urllib
 import sqlite3
 from urllib2 import HTTPError
 import urlparse
+import inspect
 
 import numpy as np
 import pandas.tseries.index
 from itertools import chain
 from astropy.io import fits
-
 from sunpy import config
 from sunpy.time import parse_time
 from sunpy.util.net import check_download_file
@@ -23,7 +22,6 @@ from sunpy.util.net import check_download_file
 RISE_FACTOR = 1.01
 FALL_FACTOR = 0.5
 FIRST_FLARE_FALL_FACTOR = 0.2
-#NORM = 0.001  # mean daily minimum in LYRA Zr channel, Jan 2010 to mid 2014.
 
 LYTAF_PATH = os.path.expanduser(os.path.join("~", "pro", "data", "LYRA", "LYTAF"))
 LYTAF_REMOTE_PATH = "http://proba2.oma.be/lyra/data/lytaf/"
@@ -65,6 +63,8 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
         ["start_irrad"] : irradiance value at start time of flare.  float
         ["peak_irrad"] : irradiance value at peak time of flare.  float
         ["end_irrad"] : irradiance value at end time of flare.  float
+        ["end_time_comment"] : comment explaining which criterion
+            triggered end time.  str
 
     Notes
     -----
@@ -98,12 +98,12 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
         start_time, end_time, level=3, channels=[4], lytaf_path=lytaf_path,
         exclude_occultation_season=exclude_occultation_season)
     # Find flares by calling find_lyra_flares
-    lyra_flares = find_lyra_flares(times, irradiance, lytaf_path=lytaf_path)
+    lyra_flares = find_lyra_flares(data["TIME"], data["CHANNEL4"], lytaf_path=lytaf_path)
     return lyra_flares
 
-def create_lyra_time_series(start_time, end_time, level=3, channels=[4],
+def create_lyra_time_series(start_time, end_time, level=3, channels=[1,2,3,4],
                             lytaf_path=LYTAF_PATH,
-                            exclude_occultation_season=True):
+                            exclude_occultation_season=False):
     """
     Creates a time series of LYRA standard Unit 2 data.
 
@@ -147,16 +147,18 @@ def create_lyra_time_series(start_time, end_time, level=3, channels=[4],
     """
     # Check that inputs are correct.
     if not level in range(1,4):
-        raise ValueError("level must be an int equal to 1, 2, or 3.")
+        raise ValueError("level must be an int equal to 1, 2, or 3. " + \
+                         "Value entered = {0}".format(level))
     if not all(channels) in range(1,5):
-        raise ValueError("Values in channels must be ints equal to 1, 2, 3, or 4.")
+        raise ValueError("Values in channels must be ints equal to 1, 2, 3, or 4." + \
+                         "Value entered = {0}".format(level))
     # Ensure input start and end times are datetime objects
     start_time = parse_time(start_time)
     end_time = parse_time(end_time)
     # Create list of datetime objects for each day in time period.
     start_until_end = end_time-start_time
     dates = [start_time+datetime.timedelta(days=i)
-             for i in range(start_until_end.days)]
+             for i in range(start_until_end.days+1)]
     # Exclude dates during LYRA eclipse season if keyword set and raise
     # warning any dates are skipped.
     if exclude_occultation_season:
@@ -191,9 +193,12 @@ def create_lyra_time_series(start_time, end_time, level=3, channels=[4],
                     data["CHANNEL{0}".format(channel)][-n:] = \
                       hdulist[1].data["CHANNEL{0}".format(channel)]
         except HTTPError:
-            warn("Could not find {0}.  Skipping date.".format(urlparse.urljoin(
+            warn("Skipping file as it could not be found: {0}".format(urlparse.urljoin(
                 "{0}{1}".format(LYRA_REMOTE_DATA_PATH,
                                 date.strftime("%Y/%m/%d/")), fitsfile)))
+        # Truncate time series to match start and end input times.
+        w = np.logical_and(data["TIME"] >= start_time, data["TIME"] < end_time)
+        data = data[w]
     return data
     
 
@@ -279,9 +284,9 @@ def _generate_lyra_event_list_scaled(start_time, end_time, lytaf_path=LYTAF_PATH
     # warning any dates are skipped.
     if exclude_occultation_season:
         dates, skipped_dates = _remove_lyra_occultation_dates(dates)
-    # Raise Warning here if dates are skipped
-    for date in skipped_dates:
-        warn("{0} has been skipped due to LYRA eclipse season.".format(date))
+        # Raise Warning here if dates are skipped
+        for date in skipped_dates:
+            warn("{0} has been skipped due to LYRA eclipse season.".format(date))
     # Raise Error if no valid dates remain
     if dates == []:
         raise ValueError("No valid dates within input date range.")
@@ -291,7 +296,8 @@ def _generate_lyra_event_list_scaled(start_time, end_time, lytaf_path=LYTAF_PATH
                                             ("end_time", object),
                                             ("start_irrad", float),
                                             ("peak_irrad", float),
-                                            ("end_irrad", float)])
+                                            ("end_irrad", float),
+                                            ("end_time_comment", "a40")])
     # Create list of required FITS files from dates, where consecutive
     # files are contained in a sublist.  Download any not found locally.
     fitsfiles = []
@@ -381,9 +387,8 @@ def _generate_lyra_event_list_scaled(start_time, end_time, lytaf_path=LYTAF_PATH
             irradiance = np.asanyarray(hdulist[1].data["CHANNEL4"])
             # Find lyra flares and write out results to csv file
             print "Seeking flares on {0}".format(date.strftime("%Y-%m-%d"))
-            new_lyra_flares = np.append(
-                new_lyra_flares,
-                find_lyra_flares(time, irradiance, lytaf_path=lytaf_path))
+            nf = find_lyra_flares(time, irradiance, lytaf_path=lytaf_path)
+            new_lyra_flares = np.concatenate((new_lyra_flares, nf))
     return new_lyra_flares
 
 def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
@@ -468,7 +473,7 @@ def find_lyra_flares(time, irradiance, lytaf_path=LYTAF_PATH):
     clean_time = clean_time[w]
     clean_irradiance = clean_irradiance[w]
     # Apply LYRAFF
-    lyra_flares = apply_lyraff(clean_time, clean_irradiance,
+    lyra_flares = apply_lyraff(clean_time, clean_irradiance, 
                                artifacts_removed=artifact_status["removed"])
 
     return lyra_flares
@@ -485,7 +490,7 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
     clean_irradiance : ndarrays/array-like convertible to float64
         irradiance measurements with an relevant arifacts removed.
 
-    artifact_removed : `numpy.recarray` or None
+    artifacts_removed : `numpy.recarray` or False
         Details of any artifacts removed.  Must be of same structure as
         artifact_status["removed"] output by remove_lytaf_events().
         Default=False, i.e. no artifacts removed
@@ -528,7 +533,7 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
             # increase in irradiance before the point found by the
             # above criteria.
             k = i
-            while clean_irradiance[k-1] < clean_irradiance[k]:
+            while clean_irradiance[k-1] < clean_irradiance[k] and k > 0:
                 k = k-1
             start_index = k
             # If artifact is at start of flare, set start time to
@@ -549,7 +554,6 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
               clean_irradiance[start_index])*FIRST_FLARE_FALL_FACTOR \
               and j < end_series: # and j < n-1:
                 j = j+1
-                #print "j = ", j, end_series
             # Once flare signal has descended by FIRST_FLARE_FALL_FACTOR,
             # start searching for when current flare ends or a new flare
             # starts.
@@ -565,8 +569,6 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
                     while clean_irradiance[j] > clean_irradiance[j+1]:
                         j = j+1
                     end_index = j
-                    print "j = ", end_index
-                    print " "
                     # If artifact is at end of flare, set end time
                     # to directly beforehand.
                     if artifacts_removed != False:
@@ -582,23 +584,26 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
                     end_condition = True
                     end_time_comment = "Final end criterion found."
                 # Check if another flare has started.
-                elif datetime.timedelta(seconds=150) <= \
-                  clean_time[i+3]-clean_time[i] <= datetime.timedelta(seconds=210) and \
-                  (clean_irradiance[i+1:i+4]-clean_irradiance[i:i+3]).all() > 0. \
-                  and clean_irradiance[i+3] >= clean_irradiance[i]*RISE_FACTOR:
+                elif j+3 < end_series-1 and datetime.timedelta(seconds=150) <= \
+                  clean_time[j+3]-clean_time[j] <= datetime.timedelta(seconds=210) and \
+                  all(clean_irradiance[j+1:j+4]-clean_irradiance[j:j+3] > 0.) and \
+                  clean_irradiance[j+3] >= clean_irradiance[j]*RISE_FACTOR:
+                    print j
                     # If a new flare is detected before current one
                     # ends, set end time of current flare to start time
                     # of next flare and iterate to move onto next flare.
-                    end_index = j
+                    kk = j
+                    while clean_irradiance[kk-1] < clean_irradiance[kk]:
+                        kk = kk-1
+                    end_index = kk
                     end_condition = True
                     end_time_comment = "Another flare found during decay phase."
-                    print end_index
-                    print " "
                 # Else iterate and check next measurement.
                 else:
                     j = j+1
             # Give warning if final flare end time caused by end of time series
             if j == end_series:
+                end_index = j
                 end_time_comment = "Time series ended before flare."
                 raise warn(
                     "Final flare's end time caused by end of time series, not flare end criteria.")
@@ -748,7 +753,7 @@ def remove_lytaf_events(time, channels=None, artifacts=None,
     for artifact in artifacts:
         if not artifact in all_lytaf_event_types:
             print all_lytaf_event_types
-            raise ValueError("{0} is not a valid artifact type. See above.".format(artifact))
+            raise ValueError("{0} is not a valid artifact type.".format(artifact))
     # Define outputs
     clean_time = np.array([parse_time(t) for t in time])
     clean_channels = copy.deepcopy(channels)
@@ -787,7 +792,6 @@ def remove_lytaf_events(time, channels=None, artifacts=None,
         all_indices = np.arange(len(time))
         nn = len(artifact_indices)
         for index in artifact_indices:
-            print "Removing {0}th artifact of {1}".format(index, nn)
             bad_period = np.logical_and(time >= lytaf["begin_time"][index],
                                         time <= lytaf["end_time"][index])
             bad_indices = np.append(bad_indices, all_indices[bad_period])
@@ -1006,7 +1010,6 @@ def get_lytaf_events(start_time, end_time, lytaf_path=None,
         ii=-1
         for event_row in event_rows:
             ii=ii+1
-            print "Entering {0}th row of {1} in recarray.".format(ii, mm)
             id_index = eventType_id.index(event_row[4])
             lytaf = np.append(lytaf,
                               np.array((datetime.datetime.utcfromtimestamp(event_row[0]),
