@@ -14,7 +14,6 @@ import inspect
 import numpy as np
 import pandas.tseries.index
 from astropy.io import fits
-from sunpy import config
 from sunpy.time import parse_time
 from sunpy.util.net import check_download_file
 
@@ -32,6 +31,9 @@ ARTIFACTS = ["UV occ.", "Offpoint", "LAR", "SAA", "Calibration", "ASIC reload",
              "Recovery"]
 
 def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
+                             lytaf_remote_path=LYTAF_REMOTE_PATH,
+                             lyra_path_data=LYRA_DATA_PATH,
+                             lyra_remote_data_path=LYRA_REMOTE_DATA_PATH,
                              exclude_occultation_season=True):
     """
     Generates a LYRA flare list without rescaling data.
@@ -46,6 +48,15 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
 
     lytaf_path : string
         directory path where the LYRA annotation files are stored.
+
+    lytaf_remote_path : string
+        URL from which to download LYRA annotation files if not available locally.
+
+    lyra_data_path : string
+        directory path where the LYRA data files are stored.
+
+    lyra_data_path : string
+        URL from which to download LYRA data files if not available locally.
 
     exclude_eclipse_season : bool
         Determines whether LYRA UV Occulation season is discarded from
@@ -94,14 +105,18 @@ def generate_lyra_event_list(start_time, end_time, lytaf_path=LYTAF_PATH,
     """
     # Produce time series for input dates.
     data = create_lyra_time_series(
-        start_time, end_time, level=3, channels=[4], lytaf_path=lytaf_path,
+        start_time, end_time, level=3, channels=[4],
+        lytaf_path=lytaf_path, lytaf_remote_path=lytaf_remote_path,
+        lyra_path_data=lyra_path_data, lyra_remote_data_path=lyra_remote_data_path,
         exclude_occultation_season=exclude_occultation_season)
     # Find flares by calling find_lyra_flares
     lyra_flares = find_lyra_flares(data["TIME"], data["CHANNEL4"], lytaf_path=lytaf_path)
     return lyra_flares
 
 def create_lyra_time_series(start_time, end_time, level=3, channels=[1,2,3,4],
-                            lytaf_path=LYTAF_PATH,
+                            lytaf_path=LYTAF_PATH, lytaf_remote_path=LYTAF_REMOTE_PATH,
+                            lyra_path_data=LYRA_DATA_PATH,
+                            lyra_remote_data_path=LYRA_REMOTE_DATA_PATH,
                             exclude_occultation_season=False):
     """
     Creates a time series of LYRA standard Unit 2 data.
@@ -129,6 +144,15 @@ def create_lyra_time_series(start_time, end_time, level=3, channels=[1,2,3,4],
 
     lytaf_path : string
         directory path where the LYRA annotation files are stored.
+
+    lytaf_remote_path : string
+        URL from which to download LYRA annotation files if not available locally.
+
+    lyra_data_path : string
+        directory path where the LYRA data files are stored.
+
+    lyra_data_path : string
+        URL from which to download LYRA data files if not available locally.
 
     exclude_eclipse_season : bool
         Determines whether LYRA UV Occulation season is discarded from
@@ -180,11 +204,11 @@ def create_lyra_time_series(start_time, end_time, level=3, channels=[1,2,3,4],
         # Check each fitsfile exists locally.  If not, download it.
         try:
             check_download_file(fitsfile,
-                                "{0}/{1}".format(LYRA_REMOTE_DATA_PATH,
+                                "{0}/{1}".format(lyra_remote_data_path,
                                                  date.strftime("%Y/%m/%d/")),
-                                LYRA_DATA_PATH)
+                                lyra_data_path)
             # Append data in files to time series
-            with fits.open(os.path.join(LYRA_DATA_PATH, fitsfile)) as hdulist:
+            with fits.open(os.path.join(lyra_data_path, fitsfile)) as hdulist:
                 n = len(hdulist[1].data)
                 data = np.append(data, np.empty((n,), dtype=data_dtypes))
                 data["TIME"][-n:] = _time_list_from_lyra_fits(hdulist)
@@ -193,7 +217,7 @@ def create_lyra_time_series(start_time, end_time, level=3, channels=[1,2,3,4],
                       hdulist[1].data["CHANNEL{0}".format(channel)]
         except HTTPError:
             warn("Skipping file as it could not be found: {0}".format(urlparse.urljoin(
-                "{0}{1}".format(LYRA_REMOTE_DATA_PATH,
+                "{0}{1}".format(lyra_remote_data_path,
                                 date.strftime("%Y/%m/%d/")), fitsfile)))
         # Truncate time series to match start and end input times.
         w = np.logical_and(data["TIME"] >= start_time, data["TIME"] < end_time)
@@ -445,7 +469,8 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
 def remove_lytaf_events(time, channels=None, artifacts=None,
                         return_artifacts=False, fitsfile=None,
                         csvfile=None, filecolumns=None,
-                        lytaf_path=None, force_use_local_lytaf=False):
+                        lytaf_path=LYTAF_PATH, lytaf_remote_path=LYTAF_REMOTE_PATH,
+                        force_use_local_lytaf=False):
     """
     Removes periods of LYRA artifacts from a time series.
 
@@ -547,8 +572,6 @@ def remove_lytaf_events(time, channels=None, artifacts=None,
 
     """
     # Check inputs
-    if not lytaf_path:
-        lytaf_path = LYTAF_PATH
     if channels and type(channels) is not list:
         raise TypeError("channels must be None or a list of numpy arrays "
                         "of dtype 'float64'.")
@@ -670,7 +693,8 @@ def remove_lytaf_events(time, channels=None, artifacts=None,
         else:
             return clean_time, clean_channels
 
-def get_lytaf_events(start_time, end_time, lytaf_path=None,
+def get_lytaf_events(start_time, end_time, lytaf_path=LYTAF_PATH,
+                     lytaf_remote_path=LYTAF_REMOTE_PATH,
                      combine_files=("lyra", "manual", "ppt", "science"),
                      csvfile=None, force_use_local_lytaf=False):
     """
@@ -735,9 +759,6 @@ def get_lytaf_events(start_time, end_time, lytaf_path=None,
 
     """
     # Check inputs
-    # Check lytaf path
-    if not lytaf_path:
-        lytaf_path = LYTAF_PATH
     # Check start_time and end_time is a date string or datetime object
     start_time = parse_time(start_time)
     end_time = parse_time(end_time)
@@ -767,7 +788,7 @@ def get_lytaf_events(start_time, end_time, lytaf_path=None,
         print "Accessing {0} database.".format(suffix)
         # Check database files are present
         dbname = "annotation_{0}.db".format(suffix)
-        check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
+        check_download_file(dbname, lytaf_remote_path, lytaf_path)
         # Open SQLITE3 annotation files
         connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
         # Create cursor to manipulate data in annotation file
@@ -791,7 +812,7 @@ def get_lytaf_events(start_time, end_time, lytaf_path=None,
                 cursor.close()
                 connection.close()
                 # ...Download latest lytaf file...
-                check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path,
+                check_download_file(dbname, lytaf_remote_path, lytaf_path,
                                     replace=True)
                 # ...and open new version of lytaf database.
                 connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
@@ -887,7 +908,8 @@ def _check_datetime(time):
                             "datetime objects or valid time strings.")
     return new_time
 
-def get_lytaf_event_types(lytaf_path=None, print_event_types=True):
+def get_lytaf_event_types(lytaf_path=LYTAF_PATH, lytaf_remote_path=LYTAF_REMOTE_PATH,
+                          print_event_types=True):
     """Prints the different event types in the each of the LYTAF databases.
 
     Parameters
@@ -905,9 +927,6 @@ def get_lytaf_event_types(lytaf_path=None, print_event_types=True):
         List of all events types in all lytaf databases.
 
     """
-    # Set lytaf_path is not done by user
-    if not lytaf_path:
-        lytaf_path = LYTAF_PATH
     suffixes = ["lyra", "manual", "ppt", "science"]
     all_event_types = []
     # For each database file extract the event types and print them.
@@ -916,7 +935,7 @@ def get_lytaf_event_types(lytaf_path=None, print_event_types=True):
     for suffix in suffixes:
         dbname = "annotation_{0}.db".format(suffix)
         # Check database file exists, else download it.
-        check_download_file(dbname, LYTAF_REMOTE_PATH, lytaf_path)
+        check_download_file(dbname, lytaf_remote_path, lytaf_path)
         # Open SQLITE3 LYTAF files
         connection = sqlite3.connect(os.path.join(lytaf_path, dbname))
         # Create cursor to manipulate data in annotation file
