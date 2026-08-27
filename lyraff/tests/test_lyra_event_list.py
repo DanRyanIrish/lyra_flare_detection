@@ -68,7 +68,7 @@ def test_extract_combined_lytaf():
         lytaf_expected[i] = (insertion_time[i], begin_time[i],
                              reference_time[i], end_time[i],
                              event_type[i], event_definition[i])
-    return lytaf_test, lytaf_expected
+    #return lytaf_test, lytaf_expected
     # check function gives expected result
     assert lytaf_test.dtype.names == lytaf_expected.dtype.names
     assert (lytaf_test["insertion_time"] ==

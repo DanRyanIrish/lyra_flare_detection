@@ -1,0 +1,88 @@
+[build-system]
+requires = [
+  "setuptools>=62.1",
+  "setuptools_scm[toml]>=8.0.0",
+  "wheel",]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lyraff"
+description = "A package for detecting flares in timeseries"
+requires-python = ">=3.9"
+readme = { file = "README.rst", content-type = "text/x-rst" }
+license = { file = "licenses/LICENSE.rst" }
+authors = [
+  { name = "DanRyanIrish", email = "ryand5@tcd.ie" },
+]
+dependencies = []
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-doctestplus",
+    "pytest-cov",
+]
+docs = [
+    "sphinx",
+    "sphinx-automodapi",
+]
+
+[tool.setuptools]
+zip-safe = false
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["lyraff*"]
+
+[tool.setuptools_scm]
+version_file = "lyraff/version.py"
+
+[tool.pytest.ini_options]
+testpaths = [
+  "lyraff",
+  "docs",
+]
+doctest_plus = "enabled"
+text_file_format = "rst"
+addopts = "--doctest-rst"
+norecursedirs = ["lyraff[\\/]_dev"]
+
+[tool.coverage.run]
+omit = [
+ "lyraff/__init*",
+ "lyraff/conftest.py",
+ "lyraff/*setup_package*",
+ "lyraff/tests/*",
+ "lyraff/*/tests/*",
+ "lyraff/extern/*",
+ "lyraff/version*",
+ "*/lyraff/__init*",
+ "*/lyraff/conftest.py",
+ "*/lyraff/*setup_package*",
+ "*/lyraff/tests/*",
+ "*/lyraff/*/tests/*",
+ "*/lyraff/extern/*",
+ "*/lyraff/version*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+  # Have to re-enable the standard pragma
+  "pragma: no cover",
+  # Don't complain about packages we have installed
+  "except ImportError",
+  # Don't complain if tests don't hit assertions
+  "raise AssertionError",
+  "raise NotImplementedError",
+  # Don't complain about script hooks
+  "def main(.*):",
+  # Ignore branches that don't pertain to this version of Python
+  "pragma: py{ignore_python_version}",
+  # Don't complain about IPython completion helper
+  "def _ipython_key_completions_",
+  # typing.TYPE_CHECKING is False at runtime
+  "if TYPE_CHECKING:",
+  # Ignore typing overloads
+  "@overload",
+]
