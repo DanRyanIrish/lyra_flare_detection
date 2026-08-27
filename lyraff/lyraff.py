@@ -1,6 +1,7 @@
 import datetime
 
 import numpy as np
+import pandas
 
 RISE_FACTOR = 1.01
 FALL_FACTOR = 0.5
@@ -45,13 +46,14 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
                                         ("start_irrad", float),
                                         ("peak_irrad", float),
                                         ("end_irrad", float),
-                                        ("end_time_comment", 'a40')])
+                                        ("end_time_comment", 'U40')])
     # Iterate through time series to find where flare start criteria
     # are satisfied.
     end_series = len(clean_irradiance)-1
     i = 0
     while i < end_series-3:
-        print "i = ", i, end_series
+        if i % 100 == 0:
+            print("i = ", i, end_series)
         # Check if current time satisfies flare reference start
         # criteria.
         if datetime.timedelta(seconds=150) <= \
@@ -117,7 +119,8 @@ def apply_lyraff(clean_time, clean_irradiance, artifacts_removed=False):
                   clean_time[j+3]-clean_time[j] <= datetime.timedelta(seconds=210) and \
                   all(clean_irradiance[j+1:j+4]-clean_irradiance[j:j+3] > 0.) and \
                   clean_irradiance[j+3] >= clean_irradiance[j]*RISE_FACTOR:
-                    print j
+                    if j % 100 == 0:
+                        print(j)
                     # If a new flare is detected before current one
                     # ends, set end time of current flare to start time
                     # of next flare and iterate to move onto next flare.
